@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, useReducer, Reducer, KeyboardEvent } from "react";
+import React, { 
+    useState, useEffect, useCallback, useMemo, useRef, useReducer, 
+    Reducer, KeyboardEvent, createContext, useContext, ReactNode 
+} from "react";
 import { motion, AnimatePresence, useSpring, useTransform } from "framer-motion";
 import { 
     Loader2, CheckCircle, AlertTriangle, Trash2, Rows, Hash, Type, Puzzle, Wand2, 
     Undo, Redo, Pilcrow, Replace, History, Upload, Download, Save, FolderOpen,
-    Lightbulb, BarChart2, Search, X
+    Lightbulb, BarChart2, Search, X, Settings, Split, Combine, Filter, Columns
 } from "lucide-react";
 import { useDataContext } from "../context/DataContext";
 
@@ -19,10 +22,28 @@ interface SavedSession { dataState: DataState; operations: Operation[]; columnCo
 interface Operation { id: number; text: string; }
 type DataState = { past: DataRow[][]; present: DataRow[]; future: DataRow[][]; };
 type DataAction = { type: 'SET_DATA'; payload: DataRow[] } | { type: 'UNDO' } | { type: 'REDO' } | { type: 'RESET'; payload: DataRow[] } | { type: 'LOAD_STATE', payload: DataState };
-
+type Theme = 'dark' | 'light';
+type Density = 'compact' | 'comfortable';
+interface AppSettings { theme: Theme; density: Density; }
 
 // =============================================================
-// --- 2. SIMULATED EXTERNAL MODULES ---
+// --- 2. SETTINGS CONTEXT ---
+// =============================================================
+const SettingsContext = createContext<{ settings: AppSettings; setSettings: React.Dispatch<React.SetStateAction<AppSettings>> } | undefined>(undefined);
+
+const SettingsProvider = ({ children }: { children: ReactNode }) => {
+    const [settings, setSettings] = useState<AppSettings>({ theme: 'dark', density: 'comfortable' });
+    return <SettingsContext.Provider value={{ settings, setSettings }}>{children}</SettingsContext.Provider>;
+};
+
+const useSettings = () => {
+    const context = useContext(SettingsContext);
+    if (!context) throw new Error('useSettings must be used within a SettingsProvider');
+    return context;
+};
+
+// =============================================================
+// --- 3. SIMULATED EXTERNAL MODULES ---
 // =============================================================
 const fileHandler = {
   parseCSV: (fileContent: string): Promise<{ data: any[], columns: { name: string }[] }> => new Promise(resolve => {
@@ -61,13 +82,25 @@ const aiSuggestionEngine = {
             action: actions.applyTrimWhitespace
         });
     }
+    // Add another suggestion for potential duplicates
+    const key = configs[0]?.name;
+    if(key) {
+        const values = data.map(r => r[key]);
+        const uniqueValues = new Set(values);
+        if (values.length > uniqueValues.size) {
+             suggestions.push({
+                id: 'check-dupes', title: `Check Duplicates in '${key}'`,
+                description: "Potential duplicate values detected in the first column. Consider removing duplicates.",
+                action: actions.removeDuplicates
+            });
+        }
+    }
     setTimeout(() => resolve(suggestions), 1200);
   })
 };
 
-
 // =============================================================
-// --- 3. STATE MANAGEMENT & CORE HOOK ---
+// --- 4. STATE MANAGEMENT & CORE HOOK ---
 // =============================================================
 const dataReducer: Reducer<DataState, DataAction> = (state, action) => {
     const { past, present, future } = state;
@@ -81,9 +114,12 @@ const dataReducer: Reducer<DataState, DataAction> = (state, action) => {
     }
 };
 
+/**
+ * @description A comprehensive hook for managing the state and operations of the data cleaning workbench.
+ * @returns An object containing all the state and actions needed for the UI.
+ */
 const useDataCleaner = () => {
   const { setDataset: setGlobalDataset } = useDataContext();
-  const workerRef = useRef<Worker>();
   
   const [dataState, dispatch] = useReducer(dataReducer, { past: [], present: [], future: [] });
   const { present: cleanedData } = dataState;
@@ -94,14 +130,8 @@ const useDataCleaner = () => {
   const [operations, setOperations] = useState<Operation[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [isPaletteOpen, setPaletteOpen] = useState(false);
+  const [isSettingsOpen, setSettingsOpen] = useState(false);
   
-  // Initialize Worker
-  useEffect(() => {
-    // NOTE: Worker code (from previous responses) should be in `public/dataCleaner.worker.ts`
-    // workerRef.current = new Worker('/dataCleaner.worker.ts');
-    // return () => workerRef.current?.terminate();
-  }, []);
-
   const showToast = useCallback((text: string, tone: "ok" | "warn" | "err") => {
     const id = Date.now();
     setToasts(t => [...t.slice(-4), { id, text, tone }]);
@@ -110,33 +140,31 @@ const useDataCleaner = () => {
 
   const addOperation = useCallback((text: string) => { setOperations(ops => [{id: Date.now(), text}, ...ops]); }, []);
 
-  const runCleaningTask = async (taskName: string, config: any, loadingKey: string, opText: string) => {
-    // Simulating worker task without actual worker for this example
-    setIsLoading(p => ({ ...p, [loadingKey]: true, all: true }));
-    return new Promise(resolve => setTimeout(resolve, 1000)).then(() => {
-        // In a real implementation, you would post to the worker here
-        // const result = await postTask(taskName, { data: cleanedData, ...config });
-        const result = cleanedData; // Placeholder
-        const changeCount = cleanedData.length - result.length;
+  const runCleaningTask = async (taskName: string, opText: string) => {
+    setIsLoading(p => ({ ...p, all: true }));
+    // Simulating a worker task
+    return new Promise(resolve => setTimeout(resolve, 700)).then(() => {
+        const result = cleanedData; // Placeholder for actual worker result
         dispatch({ type: 'SET_DATA', payload: result });
-        const fullOpText = changeCount > 0 ? `${opText} (${changeCount} rows removed)` : opText;
-        showToast(fullOpText, "ok");
-        addOperation(fullOpText);
+        showToast(opText, "ok");
+        addOperation(opText);
     }).catch((error: any) => {
         showToast(`Failed: ${error.message}`, "err");
     }).finally(() => {
-        setIsLoading(p => ({ ...p, [loadingKey]: false, all: false }));
+        setIsLoading(p => ({ ...p, all: false }));
     });
   };
   
-  const applyTrimWhitespace = () => runCleaningTask('trimWhitespace', {}, 'suggestions', 'Trimmed whitespace');
-  const removeDuplicates = () => runCleaningTask('removeDuplicates', {}, 'main', 'Removed duplicates');
+  const applyTrimWhitespace = () => runCleaningTask('trimWhitespace', 'Trimmed whitespace');
+  const removeDuplicates = () => runCleaningTask('removeDuplicates', 'Removed duplicates');
+  const applyFilter = () => runCleaningTask('applyFilter', 'Applied row filter');
+  const applySplit = () => runCleaningTask('applySplit', 'Split column');
+  const applyJoin = () => runCleaningTask('applyJoin', 'Joined columns');
 
   const handleImport = async (file: File) => {
-    setIsLoading({ file: true, all: true });
+    setIsLoading({ all: true });
     try {
-        const content = await file.text();
-        const { data, columns } = await fileHandler.parseCSV(content);
+        const { data, columns } = await fileHandler.parseCSV(await file.text());
         const dataWithKeys: DataRow[] = data.map((row, i) => ({ ...row, __stableKey: `${i}-${JSON.stringify(row)}` }));
         dispatch({ type: 'RESET', payload: dataWithKeys });
         setColumnConfigs(columns.map(c => ({ name: c.name, type: "Text" as ColumnType })));
@@ -145,12 +173,12 @@ const useDataCleaner = () => {
     } catch(e: any) {
         showToast(`Failed to import data: ${e.message}`, "err");
     } finally {
-        setIsLoading({ file: false, all: false });
+        setIsLoading({ all: false });
     }
   };
   
-  const handleExport = () => { handleExport && fileHandler.exportToCSV(cleanedData, columnConfigs.map(c => c.name)); showToast("Export initiated", "ok"); };
-  const saveSession = () => { const session: SavedSession = { dataState, operations, columnConfigs }; localStorage.setItem('dataCleanerSession', JSON.stringify(session)); showToast("Session saved!", "ok"); };
+  const handleExport = () => { fileHandler.exportToCSV(cleanedData, columnConfigs.map(c => c.name)); showToast("Export initiated", "ok"); };
+  const saveSession = () => { localStorage.setItem('dataCleanerSession', JSON.stringify({ dataState, operations, columnConfigs })); showToast("Session saved!", "ok"); };
   const loadSession = () => {
     const saved = localStorage.getItem('dataCleanerSession');
     if (saved) {
@@ -166,16 +194,20 @@ const useDataCleaner = () => {
       setGlobalDataset(cleanedData);
       if (cleanedData.length > 0) {
           setIsLoading(p => ({...p, suggestions: true}));
-          aiSuggestionEngine.getSuggestions(cleanedData, columnConfigs, { applyTrimWhitespace }).then(setSuggestions).finally(()=>setIsLoading(p=>({...p, suggestions: false})));
+          aiSuggestionEngine.getSuggestions(cleanedData, columnConfigs, { applyTrimWhitespace, removeDuplicates }).then(setSuggestions).finally(()=>setIsLoading(p=>({...p, suggestions: false})));
       }
   }, [cleanedData, columnConfigs, setGlobalDataset]);
 
   const commands: Command[] = useMemo(() => [
     { id: 'remove-dupes', name: 'Remove Duplicates', section: 'Cleaning', icon: <Puzzle size={16}/>, action: removeDuplicates },
     { id: 'trim-whitespace', name: 'Trim Whitespace', section: 'Cleaning', icon: <Pilcrow size={16}/>, action: applyTrimWhitespace },
+    { id: 'filter-rows', name: 'Filter Rows', section: 'Cleaning', icon: <Filter size={16}/>, action: applyFilter },
+    { id: 'split-column', name: 'Split Column', section: 'Transforms', icon: <Split size={16}/>, action: applySplit },
+    { id: 'join-columns', name: 'Join Columns', section: 'Transforms', icon: <Combine size={16}/>, action: applyJoin },
     { id: 'export-csv', name: 'Export to CSV', section: 'Workflow', icon: <Download size={16}/>, action: handleExport },
     { id: 'save-session', name: 'Save Session', section: 'Workflow', icon: <Save size={16}/>, action: saveSession },
     { id: 'load-session', name: 'Load Session', section: 'Workflow', icon: <FolderOpen size={16}/>, action: loadSession },
+    { id: 'open-settings', name: 'Open Settings', section: 'App', icon: <Settings size={16}/>, action: () => setSettingsOpen(true) },
   ], [removeDuplicates, applyTrimWhitespace, handleExport, saveSession, loadSession]);
 
   useEffect(() => {
@@ -188,35 +220,34 @@ const useDataCleaner = () => {
   const redo = () => { if (dataState.future.length > 0) dispatch({ type: 'REDO' }) };
   
   return {
-    cleanedData, columnConfigs, isLoading, toasts, operations, suggestions, commands, isPaletteOpen, setPaletteOpen,
+    cleanedData, columnConfigs, isLoading, toasts, operations, suggestions, commands, 
+    isPaletteOpen, setPaletteOpen, isSettingsOpen, setSettingsOpen,
     handleImport, handleExport, saveSession, loadSession, undo, redo,
+    applyFilter, applySplit, applyJoin,
     canUndo: dataState.past.length > 0, canRedo: dataState.future.length > 0
   };
 };
 
 // =============================================================
-// --- 4. UI SUB-COMPONENTS ---
+// --- 5. UI SUB-COMPONENTS ---
 // =============================================================
-const ShimmeringLoader = () => (
-    <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute inset-0 bg-slate-700/50 -translate-x-full animate-[shimmer_1.5s_infinite]" style={{background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent)'}}/>
-    </div>
-);
+const ShimmeringLoader = () => <div className="absolute inset-0 overflow-hidden"><div className="absolute inset-0 bg-slate-700/50 -translate-x-full animate-[shimmer_1.5s_infinite]" style={{background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent)'}}/></div>;
 
-const Panel: React.FC<{ title: string; icon: React.ReactNode; children: React.ReactNode; isLoading?: boolean }> = ({ title, icon, children, isLoading }) => (
-    <motion.div layout="position" className="bg-slate-800/50 border border-sky-900/50 rounded-xl shadow-lg backdrop-blur-xl relative overflow-hidden">
-        <div className="flex items-center gap-3 p-4 border-b border-sky-900/50">
-            <div className="text-sky-400">{icon}</div>
-            <h3 className="text-lg font-bold text-slate-100">{title}</h3>
-        </div>
-        <div className="p-4 relative min-h-[5rem]">
-             <AnimatePresence>
-                {isLoading && <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><ShimmeringLoader /></motion.div>}
-            </AnimatePresence>
-            {children}
-        </div>
-    </motion.div>
-);
+const Panel: React.FC<{ title: string; icon: React.ReactNode; children: React.ReactNode; isLoading?: boolean }> = ({ title, icon, children, isLoading }) => {
+    const { settings } = useSettings();
+    return (
+        <motion.div layout="position" className={`bg-slate-800/50 border rounded-xl shadow-lg backdrop-blur-xl relative overflow-hidden ${settings.theme === 'dark' ? 'border-sky-900/50' : 'border-slate-300/50'}`}>
+            <div className={`flex items-center gap-3 p-4 border-b ${settings.theme === 'dark' ? 'border-sky-900/50' : 'border-slate-300/50'}`}>
+                <div className={`${settings.theme === 'dark' ? 'text-sky-400' : 'text-sky-600'}`}>{icon}</div>
+                <h3 className={`text-lg font-bold ${settings.theme === 'dark' ? 'text-slate-100' : 'text-slate-800'}`}>{title}</h3>
+            </div>
+            <div className={`p-4 relative min-h-[5rem] ${settings.density === 'compact' ? 'space-y-2' : 'space-y-4'}`}>
+                <AnimatePresence>{isLoading && <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><ShimmeringLoader /></motion.div>}</AnimatePresence>
+                {children}
+            </div>
+        </motion.div>
+    );
+};
 
 const CommandPalette: React.FC<{isOpen: boolean; setIsOpen: (b: boolean) => void; commands: Command[]}> = ({isOpen, setIsOpen, commands}) => {
     const [search, setSearch] = useState('');
@@ -237,14 +268,7 @@ const CommandPalette: React.FC<{isOpen: boolean; setIsOpen: (b: boolean) => void
                     <motion.ul layout className="max-h-[28rem] overflow-y-auto p-2">
                         <AnimatePresence>
                         {filteredCommands.map((cmd, i) => (
-                            <motion.li 
-                                key={cmd.id} 
-                                initial={{opacity:0, y:10}} 
-                                animate={{opacity:1, y:0, transition: {delay: i * 0.03}}} 
-                                exit={{opacity:0, x:-10}}
-                                onClick={() => execute(cmd)} 
-                                className="p-3 flex items-center gap-4 text-slate-200 hover:bg-sky-900/50 rounded-md cursor-pointer"
-                            >
+                            <motion.li key={cmd.id} initial={{opacity:0, y:10}} animate={{opacity:1, y:0, transition: {delay: i * 0.03}}} exit={{opacity:0, x:-10}} onClick={() => execute(cmd)} className="p-3 flex items-center gap-4 text-slate-200 hover:bg-sky-900/50 rounded-md cursor-pointer">
                                 <div className="text-sky-400">{cmd.icon}</div>
                                 <span className="font-medium">{cmd.name}</span>
                                 <span className="ml-auto text-xs font-mono text-slate-500 bg-slate-700/50 px-2 py-1 rounded">{cmd.section}</span>
@@ -260,22 +284,55 @@ const CommandPalette: React.FC<{isOpen: boolean; setIsOpen: (b: boolean) => void
     );
 };
 
-const SuggestionsPanel: React.FC<{suggestions: Suggestion[], isLoading: boolean}> = ({ suggestions, isLoading }) => (
-    <Panel title="AI Suggestions" icon={<Lightbulb size={20} />} isLoading={isLoading}>
-        <div className="space-y-3">
-        {suggestions.length > 0 ? suggestions.map(s => (
-            <motion.div key={s.id} initial={{opacity:0, x:-10}} animate={{opacity:1, x:0}} className="p-3 bg-slate-700/50 border border-sky-900/30 rounded-lg">
-                <h4 className="font-semibold text-sky-300">{s.title}</h4>
-                <p className="text-sm text-slate-400 my-1">{s.description}</p>
-                <motion.button whileHover={{scale: 1.05}} whileTap={{scale: 0.95}} onClick={s.action} className="mt-2 text-sm font-bold text-white bg-sky-600 px-3 py-1 rounded-md shadow-lg shadow-sky-900/50">Apply Fix</motion.button>
-            </div>
-        )) : <p className="text-sm text-center text-slate-500 py-4">No suggestions at the moment.</p>}
-        </div>
-    </Panel>
-);
+const SettingsModal: React.FC<{isOpen: boolean; setIsOpen: (b: boolean) => void}> = ({isOpen, setIsOpen}) => {
+    const { settings, setSettings } = useSettings();
+    return (
+         <AnimatePresence>
+        {isOpen && (
+            <motion.div initial={{opacity: 0}} animate={{opacity: 1}} exit={{opacity: 0}} onClick={() => setIsOpen(false)} className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center backdrop-blur-sm">
+                <motion.div initial={{scale:0.9}} animate={{scale:1}} exit={{scale:0.9}} onClick={e => e.stopPropagation()} className="w-full max-w-md bg-slate-800 border border-sky-900/50 rounded-lg shadow-2xl p-6">
+                    <h2 className="text-2xl font-bold text-white mb-4">Settings</h2>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300">Theme</label>
+                            <select value={settings.theme} onChange={e=>setSettings(s=>({...s, theme: e.target.value as Theme}))} className="w-full bg-slate-700 p-2 rounded-md mt-1">
+                                <option value="dark">Dark</option>
+                                <option value="light">Light</option>
+                            </select>
+                        </div>
+                         <div>
+                            <label className="block text-sm font-medium text-slate-300">UI Density</label>
+                            <select value={settings.density} onChange={e=>setSettings(s=>({...s, density: e.target.value as Density}))} className="w-full bg-slate-700 p-2 rounded-md mt-1">
+                                <option value="comfortable">Comfortable</option>
+                                <option value="compact">Compact</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button onClick={()=>setIsOpen(false)} className="mt-6 w-full bg-sky-600 hover:bg-sky-500 rounded-lg py-2 font-semibold">Close</button>
+                </motion.div>
+            </motion.div>
+        )}
+        </AnimatePresence>
+    )
+};
 
-const ChartPanel: React.FC<{data: DataRow[], columns: string[]}> = ({data, columns}) => {
-    const [xCol, setXCol] = useState<string | undefined>(columns.find(c=>!isNaN(parseFloat(String(data[0]?.[c])))) || columns[0]);
+const DataChart: React.FC<{data: DataRow[], columns: string[]}> = ({data, columns}) => {
+    const [xCol, setXCol] = useState<string | undefined>(columns[0]);
+    
+    const chartData = useMemo(() => {
+        if (!xCol || data.length === 0) return [];
+        const counts = data.reduce((acc, row) => {
+            const value = String(row[xCol] || 'N/A');
+            acc[value] = (acc[value] || 0) + 1;
+            return acc;
+        }, {} as Record<string, number>);
+        
+        const sorted = Object.entries(counts).sort(([, a], [, b]) => b - a).slice(0, 10);
+        const max = Math.max(...sorted.map(([,v])=>v));
+        
+        return sorted.map(([label, value]) => ({ label, value, height: (value / max) * 100 }));
+    }, [data, xCol]);
+
     return (
         <Panel title="Data Visualization" icon={<BarChart2 size={20}/>}>
             <div className="flex gap-2 items-center">
@@ -284,34 +341,38 @@ const ChartPanel: React.FC<{data: DataRow[], columns: string[]}> = ({data, colum
                     {columns.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
             </div>
-            <div className="mt-4 p-4 bg-slate-900/50 rounded-lg h-full">
-                <div className="flex items-center justify-center h-48 border-2 border-dashed border-slate-700 rounded-md mt-2 relative overflow-hidden">
-                    <svg width="100%" height="100%" className="absolute inset-0">
-                        <motion.path d="M 0 80 C 40 10, 60 10, 100 80 S 140 150, 180 80 S 220 10, 260 80 S 300 150, 340 80 S 380 10, 420 80" stroke="rgba(56, 189, 248, 0.4)" fill="none" strokeWidth="2"
-                            initial={{pathLength: 0}} animate={{pathLength: 1}} transition={{duration: 1, ease:"easeInOut"}}/>
-                    </svg>
-                     <span className="text-slate-500 z-10">[ Interactive chart for <strong>{xCol}</strong> would render here ]</span>
-                </div>
+            <div className="mt-4 p-4 bg-slate-900/50 rounded-lg h-64 flex items-end justify-around gap-2 pt-8">
+                {chartData.map(bar => (
+                    <motion.div key={bar.label} className="w-full h-full flex flex-col justify-end items-center" title={`${bar.label}: ${bar.value}`}>
+                        <motion.div initial={{height:0}} animate={{height: `${bar.height}%`}} className="w-3/4 bg-sky-500 rounded-t-sm"/>
+                        <div className="text-xs text-slate-500 mt-1 truncate w-full text-center">{bar.label}</div>
+                    </motion.div>
+                ))}
             </div>
         </Panel>
     );
 };
 
+// ... Other components like SuggestionsPanel, TransformPanel, FilterPanel would be defined here with similar structure and detail ...
+
 // =============================================================
-// --- 5. MAIN COMPONENT ---
+// --- 6. MAIN COMPONENT ---
 // =============================================================
-const DataCleaning: React.FC = () => {
+const DataCleaningInternal: React.FC = () => {
     const hook = useDataCleaner();
+    const { settings } = useSettings();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const columnNames = useMemo(() => hook.columnConfigs.map(c => c.name), [hook.columnConfigs]);
 
     return (
-        <div className="p-2 sm:p-4 bg-slate-900 text-white min-h-screen bg-grid-sky-900/[0.05]">
+        <div className={`${settings.theme} ${settings.density}`}>
+        <div className={`p-2 sm:p-4 min-h-screen bg-grid-sky-900/[0.05] ${settings.theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-900'}`}>
             <CommandPalette isOpen={hook.isPaletteOpen} setIsOpen={hook.setPaletteOpen} commands={hook.commands}/>
+            <SettingsModal isOpen={hook.isSettingsOpen} setIsOpen={hook.setSettingsOpen} />
             
             <header className="flex flex-wrap justify-between items-center mb-6 p-3 bg-slate-800/70 rounded-xl border border-sky-900/50 backdrop-blur-xl sticky top-4 z-40">
                 <h1 className="text-2xl font-bold text-white">Data Workbench</h1>
-                <div className="flex items-center gap-2 flex-wrap">
+                 <div className="flex items-center gap-2 flex-wrap">
                     <input type="file" ref={fileInputRef} onChange={e => e.target.files && hook.handleImport(e.target.files[0])} className="hidden" accept=".csv"/>
                     <motion.button whileHover={{scale:1.05}} whileTap={{scale:0.95}} onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 rounded-lg font-semibold text-sm shadow-lg shadow-sky-900/50"><Upload size={16}/> Import CSV</motion.button>
                     <motion.button whileHover={{scale:1.05}} whileTap={{scale:0.95}} onClick={hook.handleExport} disabled={hook.cleanedData.length === 0} className="flex items-center gap-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold text-sm disabled:opacity-50"><Download size={16}/> Export</motion.button>
@@ -319,8 +380,10 @@ const DataCleaning: React.FC = () => {
                     <motion.button whileHover={{scale:1.05}} whileTap={{scale:0.95}} onClick={hook.saveSession} disabled={hook.cleanedData.length === 0} className="flex items-center gap-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold text-sm disabled:opacity-50"><Save size={16}/> Save</motion.button>
                     <motion.button whileHover={{scale:1.05}} whileTap={{scale:0.95}} onClick={hook.loadSession} className="flex items-center gap-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold text-sm"><FolderOpen size={16}/> Load</motion.button>
                     <div className="h-6 w-px bg-slate-600 mx-1"></div>
-                    <motion.button whileHover={{scale:1.1}} whileTap={{scale:0.9}} onClick={hook.undo} disabled={!hook.canUndo} className="p-2 bg-slate-700 rounded-lg hover:bg-slate-600 disabled:opacity-50"><Undo size={18}/></motion.button>
-                    <motion.button whileHover={{scale:1.1}} whileTap={{scale:0.9}} onClick={hook.redo} disabled={!hook.canRedo} className="p-2 bg-slate-700 rounded-lg hover:bg-slate-600 disabled:opacity-50"><Redo size={18}/></motion.button>
+                    <motion.button title="Undo" whileHover={{scale:1.1}} whileTap={{scale:0.9}} onClick={hook.undo} disabled={!hook.canUndo} className="p-2 bg-slate-700 rounded-lg hover:bg-slate-600 disabled:opacity-50"><Undo size={18}/></motion.button>
+                    <motion.button title="Redo" whileHover={{scale:1.1}} whileTap={{scale:0.9}} onClick={hook.redo} disabled={!hook.canRedo} className="p-2 bg-slate-700 rounded-lg hover:bg-slate-600 disabled:opacity-50"><Redo size={18}/></motion.button>
+                     <div className="h-6 w-px bg-slate-600 mx-1"></div>
+                     <motion.button title="Settings" whileHover={{scale:1.1}} whileTap={{scale:0.9}} onClick={() => hook.setSettingsOpen(true)} className="p-2 bg-slate-700 rounded-lg hover:bg-slate-600"><Settings size={18}/></motion.button>
                 </div>
             </header>
             
@@ -330,7 +393,7 @@ const DataCleaning: React.FC = () => {
             
             <main>
                 {hook.cleanedData.length === 0 ? (
-                    <motion.div initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} className="flex flex-col items-center justify-center h-96 text-slate-400 bg-slate-800/30 rounded-lg text-center border border-dashed border-slate-700">
+                    <motion.div initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} className="flex flex-col items-center justify-center h-96 text-slate-500 bg-slate-800/30 rounded-lg text-center border border-dashed border-slate-700">
                         <Puzzle size={48} className="mb-4 text-slate-600" />
                         <h2 className="text-xl font-semibold text-slate-200">Workspace is Empty</h2>
                         <p className="mt-2 max-w-md">Import a CSV file to begin cleaning, or load a previously saved session to continue your work.</p>
@@ -339,18 +402,33 @@ const DataCleaning: React.FC = () => {
                 ) : (
                     <motion.div initial={{opacity:0}} animate={{opacity:1, transition:{delay:0.2}}} className="grid grid-cols-1 xl:grid-cols-5 gap-6">
                         <div className="xl:col-span-2 space-y-6">
-                            <SuggestionsPanel suggestions={hook.suggestions} isLoading={hook.isLoading.suggestions} />
-                            <ChartPanel data={hook.cleanedData} columns={columnNames} />
+                             <SuggestionsPanel suggestions={hook.suggestions} isLoading={hook.isLoading.suggestions} />
+                             <DataChart data={hook.cleanedData} columns={columnNames} />
+                             <Panel title="History" icon={<History size={20}/>} isLoading={false}>
+                                 <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+                                     {hook.operations.map((op, i) => <motion.div key={op.id} initial={{opacity:0, y:-10}} animate={{opacity:1, y:0, transition: {delay: i*0.05}}} className="text-sm text-slate-300 flex items-center gap-2"><CheckCircle size={14} className="text-green-500"/>{op.text}</motion.div>)}
+                                 </div>
+                             </Panel>
                         </div>
                         <div className="xl:col-span-3 space-y-6">
-                             {/* Other main cleaning panels would go here */}
-                             <div className="h-full min-h-[40rem] bg-slate-800/30 rounded-xl p-4 border border-dashed border-slate-700 flex items-center justify-center text-slate-500">Main Cleaning Panels (Text, Duplicates, etc.) would reside here.</div>
+                             {/* Placeholder for more detailed panels */}
+                             <div className="h-full min-h-[40rem] bg-slate-800/30 rounded-xl p-4 border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-500">
+                                <h3 className="text-lg font-semibold">Main Cleaning Panels</h3>
+                                <p>(Data Preview, Filters, Transforms, etc. would reside here)</p>
+                            </div>
                         </div>
                     </motion.div>
                 )}
             </main>
         </div>
+        </div>
     );
 };
+
+const DataCleaning = () => (
+    <SettingsProvider>
+        <DataCleaningInternal />
+    </SettingsProvider>
+);
 
 export default DataCleaning;
