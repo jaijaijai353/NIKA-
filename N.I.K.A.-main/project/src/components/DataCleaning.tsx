@@ -315,8 +315,11 @@ const DataCleaning: React.FC = () => {
           newRows.push(row);
         }
       }
+      // Commit the changes to the global dataset via the context
       updateCleanedData(newRows);
+      // Locally recompute summary for the cards on this page
       recomputeSummary(newRows, dataset.columns);
+
       setToast({
         open: true,
         text: `Dropped ${
@@ -324,17 +327,7 @@ const DataCleaning: React.FC = () => {
         } rows with missing values`,
         tone: "ok",
       });
-      console.log("Missing values applied, newRows length:", newRows.length);
-      
-      // Direct update: Immediately update the dataset
-      directUpdateDataset(newRows);
-      
-      // Backup: Force dataset update to ensure all components get the new data
-      setTimeout(() => {
-        console.log("Backup: Force dataset update for missing values...");
-        forceDatasetUpdate(newRows);
-      }, 200);
-      
+      console.log("Missing values applied, new dataset length:", newRows.length);
       return;
     }
 
@@ -390,23 +383,17 @@ const DataCleaning: React.FC = () => {
       newRows.push(newRow);
     }
 
+    // Commit the changes to the global dataset via the context
     updateCleanedData(newRows);
+    // Locally recompute summary for the cards on this page
     recomputeSummary(newRows, dataset.columns);
+
     setToast({
       open: true,
       text: `Missing values handled using "${missingStrategy}"`,
       tone: "ok",
     });
-    console.log("Missing values filled, newRows length:", newRows.length);
-    
-    // Direct update: Immediately update the dataset
-    directUpdateDataset(newRows);
-    
-    // Backup: Force dataset update to ensure all components get the new data
-    setTimeout(() => {
-      console.log("Backup: Force dataset update for missing values...");
-      forceDatasetUpdate(newRows);
-    }, 200);
+    console.log("Missing values filled, new dataset length:", newRows.length);
   };
 
   // -----------------------------------------------------------
@@ -426,22 +413,17 @@ const DataCleaning: React.FC = () => {
       }
     }
     console.log("Duplicates removed, unique rows:", unique.length, "from", startRows.length);
+
+    // Commit the changes to the global dataset via the context
     updateCleanedData(unique);
+    // Locally recompute summary for the cards on this page
     recomputeSummary(unique, dataset.columns);
+
     setToast({
       open: true,
       text: `Removed ${startRows.length - unique.length} duplicate rows`,
       tone: "ok",
     });
-    
-    // Direct update: Immediately update the dataset
-    directUpdateDataset(unique);
-    
-    // Backup: Force dataset update to ensure all components get the new data
-    setTimeout(() => {
-      console.log("Backup: Force dataset update for duplicates...");
-      forceDatasetUpdate(unique);
-    }, 200);
   };
 
   // -----------------------------------------------------------
@@ -605,21 +587,13 @@ const DataCleaning: React.FC = () => {
       }
     }
 
-    // Commit the transformed data to global dataset and recompute summary
+    // Commit the transformed data to the global dataset via the context
     updateCleanedData(newRows);
+    // Locally recompute summary for the cards on this page
     recomputeSummary(newRows, dataset.columns);
 
     console.log("Column types applied. Final data sample:", newRows.slice(0, 2));
     console.log("Final data length:", newRows.length);
-
-    // Direct update: Immediately update the dataset
-    directUpdateDataset(newRows);
-
-    // Backup: Force dataset update to ensure all components get the new data
-    setTimeout(() => {
-      console.log("Backup: Force dataset update...");
-      forceDatasetUpdate(newRows);
-    }, 200);
 
     // Let the user know things applied correctly
     setToast({
@@ -736,22 +710,10 @@ const DataCleaning: React.FC = () => {
   // -----------------------------------------------------------
   // UI: HEADER
   // -----------------------------------------------------------
-
-  // Direct function to update dataset (backup method)
-  const directUpdateDataset = (newData: any[]) => {
-    if (!dataset) return;
-    
-    console.log("Direct dataset update called with data length:", newData.length);
-    
-    const updatedDataset = {
-      ...dataset,
-      data: [...newData],
-      updatedAt: new Date()
-    };
-    
-    setDataset(updatedDataset);
-    console.log("Direct dataset update completed");
-  };
+  
+  // All cleaning actions now use `updateCleanedData` from the context
+  // to ensure the global state is modified correctly and reflects
+  // across all components consuming the DataContext.
 
   return (
     <div className="space-y-6">
