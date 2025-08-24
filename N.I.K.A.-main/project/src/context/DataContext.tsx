@@ -5,13 +5,15 @@ import React, {
   useContext, 
   useState, 
   ReactNode, 
+  useEffect,
   useMemo 
 } from "react";
-import { Dataset, DataSummary, AIInsight } from "../types"; // Assuming types are defined here
+import { Dataset, DataSummary, AIInsight, ColumnInfo } from "../types";
+import { generateAIInsights, analyzeColumns } from "../utils/dataProcessor";
 
-/* -------------------------------------------------------------------------- */
-/* TYPE DEFINITIONS                              */
-/* -------------------------------------------------------------------------- */
+// --------------------------------------------------------------------------
+// TYPE DEFINITIONS
+// --------------------------------------------------------------------------
 
 interface DataContextType {
   rawDataset: Dataset | null;      // The original, unmodified dataset
@@ -24,11 +26,12 @@ interface DataContextType {
   loadNewDataset: (newDataset: Dataset) => void;
   updateCleanedData: (cleanedData: any[], newSummary?: DataSummary) => void;
   resetDataset: () => void;
+  setDataSummary: (summary: DataSummary | null) => void;
 }
 
-/* -------------------------------------------------------------------------- */
-/* CONTEXT CREATION                              */
-/* -------------------------------------------------------------------------- */
+// --------------------------------------------------------------------------
+// CONTEXT CREATION
+// --------------------------------------------------------------------------
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
@@ -40,9 +43,9 @@ export const useDataContext = () => {
   return context;
 };
 
-/* -------------------------------------------------------------------------- */
-/* PROVIDER COMPONENT                             */
-/* -------------------------------------------------------------------------- */
+// --------------------------------------------------------------------------
+// PROVIDER COMPONENT
+// --------------------------------------------------------------------------
 
 interface DataProviderProps {
   children: ReactNode;
@@ -55,27 +58,27 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
   const [aiInsights, setAIInsights] = useState<AIInsight[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  /* -------------------------------------------------------------------------- */
-  /* CONTEXT ACTIONS                              */
-  /* -------------------------------------------------------------------------- */
+  // REMOVED: isInitialUpload, updateCounter, and forceDatasetUpdate are not needed.
+
+  // --------------------------------------------------------------------------
+  // CONTEXT ACTIONS
+  // --------------------------------------------------------------------------
 
   /**
-   * Loads a completely new dataset, setting both the raw and working copies.
-   * This should be called when a user uploads a new file.
+   * Loads a new dataset, setting both the raw (original) and working copies.
+   * This should be called from your file upload component.
    */
   const loadNewDataset = (newDataset: Dataset) => {
     console.log("📂 Loading new dataset. Rows:", newDataset.data.length);
-    setRawDataset(newDataset); // Save the original
-    setDataset(newDataset);     // Set the working copy
-    // NOTE: You might want to generate summary/insights here as well
+    setRawDataset(newDataset);
+    setDataset(newDataset);
   };
 
   /**
    * Updates the working dataset with cleaned data.
-   * This is called by the cleaning components.
    */
-  const updateCleanedData = (cleanedData: any[], newSummary?: DataSummary) => {
-    // FIX: The check for 'isInitialUpload' is removed, as it was the main bug.
+  const updateCleanedData = (cleanedData: any[], summary?: DataSummary) => {
+    // FIX: The buggy 'isInitialUpload' check is removed.
     if (!dataset) {
       console.warn("⚠️ updateCleanedData called but no dataset is loaded.");
       return;
@@ -83,17 +86,17 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
 
     console.log("🧹 Applying cleaned data. New row count:", cleanedData.length);
 
-    // A simple, direct state update. No timeouts or counters needed.
+    // A simple, direct, and reliable state update.
     setDataset(prevDataset => ({
       ...prevDataset!,
       data: cleanedData,
     }));
 
-    if (newSummary) {
-      setDataSummary(newSummary);
+    if (summary) {
+      setDataSummary(summary);
     }
   };
-
+  
   /**
    * Resets the working dataset back to the original raw version.
    */
@@ -101,21 +104,36 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     if (rawDataset) {
       console.log("⏪ Resetting dataset to original version.");
       setDataset(rawDataset);
-      // NOTE: You'll likely want to re-calculate the summary here too.
     }
   };
 
-  // --- Side effects like AI insight generation can remain here ---
-  // useEffect(() => {
-  //   if (dataset) {
-  //     // your async AI insight generation logic
-  //   }
-  // }, [dataset]);
+  // --------------------------------------------------------------------------
+  // SIDE EFFECTS (e.g., AI Insights)
+  // --------------------------------------------------------------------------
 
+  useEffect(() => {
+    const fetchInsights = async () => {
+      if (!dataset) {
+        setAIInsights([]);
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const columns: ColumnInfo[] = analyzeColumns(dataset.data);
+        const insights = await generateAIInsights(dataset.data, columns);
+        setAIInsights(insights);
+      } catch (error) {
+        console.error("❌ Error generating AI insights:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchInsights();
+  }, [dataset]);
 
-  /* -------------------------------------------------------------------------- */
-  /* CONTEXT PROVIDER AND VALUE                         */
-  /* -------------------------------------------------------------------------- */
+  // --------------------------------------------------------------------------
+  // CONTEXT PROVIDER AND VALUE
+  // --------------------------------------------------------------------------
   
   // FIX: useMemo prevents all child components from re-rendering unnecessarily.
   const value = useMemo(() => ({
@@ -127,6 +145,7 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     loadNewDataset,
     updateCleanedData,
     resetDataset,
+    setDataSummary,
   }), [rawDataset, dataset, dataSummary, aiInsights, isLoading]);
 
   return (
