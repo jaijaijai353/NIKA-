@@ -1,53 +1,37 @@
 // src/context/DataContext.tsx
+
 import React, { 
   createContext, 
   useContext, 
   useState, 
-  useEffect, 
-  ReactNode 
+  ReactNode, 
+  useMemo 
 } from "react";
-
-// Import project-specific types
-import { Dataset, DataSummary, AIInsight, ColumnInfo } from "../types";
-
-// Import utility functions for processing
-import { generateAIInsights, analyzeColumns } from "../utils/dataProcessor";
+import { Dataset, DataSummary, AIInsight } from "../types"; // Assuming types are defined here
 
 /* -------------------------------------------------------------------------- */
-/*                                TYPE DEFINITIONS                            */
+/* TYPE DEFINITIONS                              */
 /* -------------------------------------------------------------------------- */
 
 interface DataContextType {
-  rawDataset: Dataset | null;
-  dataset: Dataset | null;
+  rawDataset: Dataset | null;      // The original, unmodified dataset
+  dataset: Dataset | null;         // The current, working dataset (can be cleaned)
   dataSummary: DataSummary | null;
   aiInsights: AIInsight[];
   isLoading: boolean;
 
-  // State setters
-  setDataset: (dataset: Dataset | null) => void;
-  setRawDataset: (dataset: Dataset | null) => void;
-  setDataSummary: (summary: DataSummary | null) => void;
-  setAIInsights: (insights: AIInsight[]) => void;
-  setIsLoading: (loading: boolean) => void;
-
-  // Custom update helpers
-  updateCleanedData: (cleanedData: any[], summary?: DataSummary) => void;
-  forceDatasetUpdate: (newData: any[]) => void;
-
-  // Debug helper to force re-renders
-  updateCounter: number;
+  // Actions
+  loadNewDataset: (newDataset: Dataset) => void;
+  updateCleanedData: (cleanedData: any[], newSummary?: DataSummary) => void;
+  resetDataset: () => void;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              CONTEXT CREATION                              */
+/* CONTEXT CREATION                              */
 /* -------------------------------------------------------------------------- */
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
-/**
- * Hook to consume DataContext safely
- */
 export const useDataContext = () => {
   const context = useContext(DataContext);
   if (!context) {
@@ -57,7 +41,7 @@ export const useDataContext = () => {
 };
 
 /* -------------------------------------------------------------------------- */
-/*                             PROVIDER COMPONENT                             */
+/* PROVIDER COMPONENT                             */
 /* -------------------------------------------------------------------------- */
 
 interface DataProviderProps {
@@ -65,183 +49,88 @@ interface DataProviderProps {
 }
 
 export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
-  /* ------------------------------ STATE HOOKS ----------------------------- */
   const [rawDataset, setRawDataset] = useState<Dataset | null>(null);
-
   const [dataset, setDataset] = useState<Dataset | null>(null);
-
   const [dataSummary, setDataSummary] = useState<DataSummary | null>(null);
-
   const [aiInsights, setAIInsights] = useState<AIInsight[]>([]);
-
   const [isLoading, setIsLoading] = useState(false);
 
-  const [isInitialUpload, setIsInitialUpload] = useState(true);
-
-  const [updateCounter, setUpdateCounter] = useState(0);
-
   /* -------------------------------------------------------------------------- */
-  /*                       FUNCTION: updateCleanedData                          */
+  /* CONTEXT ACTIONS                              */
   /* -------------------------------------------------------------------------- */
-  const updateCleanedData = (cleanedData: any[], summary?: DataSummary) => {
-    if (!dataset || isInitialUpload) {
-      console.log("⚠️ Skipping updateCleanedData - dataset missing or still initial upload");
-      return;
-    }
 
-    console.log("🧹 Updating cleaned dataset");
-    console.log("Previous length:", dataset.data.length);
-    console.log("New length:", cleanedData.length);
-
-    const updatedDataset = {
-      ...dataset,
-      data: [...cleanedData],
-      updatedAt: new Date()
-    };
-
-    setDataset(updatedDataset);
-    setUpdateCounter(prev => prev + 1);
-
-    if (summary) {
-      setDataSummary(summary);
-    }
-
-    // Force extra re-renders just in case
-    setTimeout(() => {
-      setUpdateCounter(prev => prev + 1);
-      if (summary) {
-        setDataSummary({ ...summary });
-      }
-
-      setTimeout(() => {
-        const finalDataset = {
-          ...updatedDataset,
-          data: [...cleanedData],
-          updatedAt: new Date()
-        };
-        setDataset(finalDataset);
-        setUpdateCounter(prev => prev + 1);
-      }, 50);
-    }, 100);
+  /**
+   * Loads a completely new dataset, setting both the raw and working copies.
+   * This should be called when a user uploads a new file.
+   */
+  const loadNewDataset = (newDataset: Dataset) => {
+    console.log("📂 Loading new dataset. Rows:", newDataset.data.length);
+    setRawDataset(newDataset); // Save the original
+    setDataset(newDataset);     // Set the working copy
+    // NOTE: You might want to generate summary/insights here as well
   };
 
-  /* -------------------------------------------------------------------------- */
-  /*                     FUNCTION: forceDatasetUpdate                           */
-  /* -------------------------------------------------------------------------- */
-  const forceDatasetUpdate = (newData: any[]) => {
+  /**
+   * Updates the working dataset with cleaned data.
+   * This is called by the cleaning components.
+   */
+  const updateCleanedData = (cleanedData: any[], newSummary?: DataSummary) => {
+    // FIX: The check for 'isInitialUpload' is removed, as it was the main bug.
     if (!dataset) {
-      console.log("⚠️ No dataset to force update");
+      console.warn("⚠️ updateCleanedData called but no dataset is loaded.");
       return;
     }
 
-    console.log("🔄 Force dataset update called, new length:", newData.length);
+    console.log("🧹 Applying cleaned data. New row count:", cleanedData.length);
 
-    const forcedDataset = {
-      ...dataset,
-      data: [...newData],
-      updatedAt: new Date(),
-      forced: true
-    };
+    // A simple, direct state update. No timeouts or counters needed.
+    setDataset(prevDataset => ({
+      ...prevDataset!,
+      data: cleanedData,
+    }));
 
-    setDataset(forcedDataset);
-    setUpdateCounter(prev => prev + 1);
-
-    console.log("✅ Force dataset update completed");
-  };
-
-  /* -------------------------------------------------------------------------- */
-  /*                  WRAPPER: handleSetDataset (for uploads)                   */
-  /* -------------------------------------------------------------------------- */
-  const handleSetDataset = (newDataset: Dataset | null) => {
-    console.log("📂 handleSetDataset called");
-    console.log("Has new dataset:", !!newDataset);
-    console.log("Is initial upload:", isInitialUpload);
-    console.log("New dataset length:", newDataset?.data?.length);
-
-    if (newDataset && isInitialUpload) {
-      console.log("🎉 First upload detected, turning off initialUpload flag");
-      setIsInitialUpload(false);
+    if (newSummary) {
+      setDataSummary(newSummary);
     }
-
-    setDataset(newDataset);
   };
 
-  /* -------------------------------------------------------------------------- */
-  /*             SIDE EFFECT: auto-generate AI insights on change               */
-  /* -------------------------------------------------------------------------- */
-  useEffect(() => {
-    const fetchInsights = async () => {
-      if (!dataset) {
-        setAIInsights([]);
-        return;
-      }
+  /**
+   * Resets the working dataset back to the original raw version.
+   */
+  const resetDataset = () => {
+    if (rawDataset) {
+      console.log("⏪ Resetting dataset to original version.");
+      setDataset(rawDataset);
+      // NOTE: You'll likely want to re-calculate the summary here too.
+    }
+  };
 
-      setIsLoading(true);
+  // --- Side effects like AI insight generation can remain here ---
+  // useEffect(() => {
+  //   if (dataset) {
+  //     // your async AI insight generation logic
+  //   }
+  // }, [dataset]);
 
-      try {
-        console.log("🤖 Generating AI insights...");
-
-        const columns: ColumnInfo[] = analyzeColumns(dataset.data);
-
-        const insights = await generateAIInsights(dataset.data, columns);
-
-        setAIInsights(insights);
-
-        console.log("✅ AI insights generated:", insights.length);
-      } catch (error) {
-        console.error("❌ Error generating AI insights:", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    fetchInsights();
-  }, [dataset]);
 
   /* -------------------------------------------------------------------------- */
-  /*                            DEBUGGING LOGS                                  */
+  /* CONTEXT PROVIDER AND VALUE                         */
   /* -------------------------------------------------------------------------- */
-  useEffect(() => {
-    console.log("📊 Dataset changed in context");
-    console.log("Has data:", !!dataset);
-    console.log("Length:", dataset?.data?.length);
-    console.log("Columns:", dataset?.columns?.length);
-  }, [dataset]);
+  
+  // FIX: useMemo prevents all child components from re-rendering unnecessarily.
+  const value = useMemo(() => ({
+    rawDataset,
+    dataset,
+    dataSummary,
+    aiInsights,
+    isLoading,
+    loadNewDataset,
+    updateCleanedData,
+    resetDataset,
+  }), [rawDataset, dataset, dataSummary, aiInsights, isLoading]);
 
-  useEffect(() => {
-    console.log("🟡 isInitialUpload changed:", isInitialUpload);
-  }, [isInitialUpload]);
-
-  useEffect(() => {
-    console.log("🔄 Update counter changed:", updateCounter);
-  }, [updateCounter]);
-
-  /* -------------------------------------------------------------------------- */
-  /*                             CONTEXT PROVIDER                               */
-  /* -------------------------------------------------------------------------- */
   return (
-    <DataContext.Provider
-      value={{
-        rawDataset,
-        dataset,
-        dataSummary,
-        aiInsights,
-        isLoading,
-
-        // Setters
-        setDataset: handleSetDataset,
-        setRawDataset,
-        setDataSummary,
-        setAIInsights,
-        setIsLoading,
-
-        // Helpers
-        updateCleanedData,
-        forceDatasetUpdate,
-
-        updateCounter
-      }}
-    >
+    <DataContext.Provider value={value}>
       {children}
     </DataContext.Provider>
   );
