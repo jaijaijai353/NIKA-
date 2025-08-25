@@ -56,11 +56,11 @@ const FileUpload: React.FC = () => {
         const v = out[k];
         if (typeof v === 'number' && dateHeaderHint[k] && isLikelyExcelSerial(v)) {
           const d = excelSerialToDate(v);
-          out[k] = d.toLocaleDateString('en-GB');
+          out[k] = d.toLocaleDateString('en-GB'); // ✅ dd/mm/yyyy
         } else if (typeof v === 'string') {
           const parsed = new Date(v);
           if (!isNaN(parsed.getTime())) {
-            out[k] = parsed.toLocaleDateString('en-GB');
+            out[k] = parsed.toLocaleDateString('en-GB'); // ✅ dd/mm/yyyy
           }
         }
       });
@@ -107,16 +107,16 @@ const FileUpload: React.FC = () => {
 
       if (!data || data.length === 0) throw new Error('No data found in file');
 
-      // Keep raw untouched dataset
+      // ✅ Keep raw untouched dataset
       const rawDataset = {
         id: `raw-${Date.now()}`,
         name: file.name,
-        data, // untouched data
+        data, // untouched
         uploadedAt: new Date(),
         size: file.size,
       };
 
-      // Make a normalized copy for working dataset
+      // ✅ Make a normalized copy for working dataset
       const normalizedData = normalizeDates([...data]);
 
       const columns = analyzeColumns(normalizedData);
@@ -138,8 +138,8 @@ const FileUpload: React.FC = () => {
       setDataSummary(summary);
       setAIInsights(insights);
 
-      // Preview raw data only
-      setDatasetPreview(data.slice(0, 5));
+      // ✅ Preview normalized (cleaned) data
+      setDatasetPreview(normalizedData.slice(0, 5));
 
       setUploadStatus('success');
     } catch (error) {
@@ -170,20 +170,6 @@ const FileUpload: React.FC = () => {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
-  };
-
-  const formatPreviewValue = (val: any) => {
-    if (val instanceof Date) {
-      try {
-        return val.toLocaleDateString('en-GB');
-      } catch {
-        const dd = String(val.getDate()).padStart(2, '0');
-        const mm = String(val.getMonth() + 1).padStart(2, '0');
-        const yyyy = val.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      }
-    }
-    return val;
   };
 
   return (
@@ -273,7 +259,7 @@ const FileUpload: React.FC = () => {
                   Dataset uploaded successfully!
                 </p>
 
-                {/* Preview Table */}
+                {/* ✅ Preview Table */}
                 {datasetPreview.length > 0 && (
                   <div className="mt-4 text-left bg-gray-900 p-4 rounded-md max-h-64 overflow-auto">
                     <h3 className="text-white font-semibold mb-2">Preview:</h3>
@@ -298,7 +284,7 @@ const FileUpload: React.FC = () => {
                                 key={col}
                                 className="border-b border-gray-800 px-2 py-1"
                               >
-                                {formatPreviewValue(row[col])}
+                                {row[col]}
                               </td>
                             ))}
                           </tr>
