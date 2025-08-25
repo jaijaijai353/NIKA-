@@ -13,34 +13,34 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart as RechartsPieChart, Pie, Cell, Legend 
 } from 'recharts';
+import { motion as m } from 'framer-motion';
 
 const Overview: React.FC = () => {
   const { dataset, dataSummary, updateCounter } = useDataContext();
   
-  // Debug: Log when component renders to see updates
+  // Debug: Log when component renders
   console.log("Overview component rendered:", { 
     hasDataset: !!dataset, 
     dataLength: dataset?.data?.length,
     updateCounter 
   });
   
-  // Debug: Log when updateCounter changes specifically
+  // Force re-render when update counter changes
   useEffect(() => {
     console.log("Overview: Update counter changed to:", updateCounter);
   }, [updateCounter]);
   
-  // Debug: Log when the summary object updates
+  // Force re-render when dataset data changes
   useEffect(() => {
-    console.log("Overview: dataSummary updated:", dataSummary);
-  }, [dataSummary]);
+    console.log("Overview: Dataset data length changed to:", dataset?.data?.length);
+  }, [dataset?.data?.length]);
 
   const [selectedType, setSelectedType] = useState<string | null>(null);
 
-  // This guard is crucial for initial render before data is loaded.
   if (!dataset || !dataSummary) {
     return (
       <div className="flex items-center justify-center h-64">
-        <p className="text-gray-400">No data available. Please upload a file to begin.</p>
+        <p className="text-gray-400">No data available</p>
       </div>
     );
   }
@@ -50,11 +50,11 @@ const Overview: React.FC = () => {
     switch(title) {
       case 'Missing Values':
         if (value === 0) return 'text-green-400';
-        if (value <= (dataset?.data?.length || 0) * 0.05) return 'text-yellow-400';
+        if (value <= 50) return 'text-yellow-400';
         return 'text-red-400';
       case 'Duplicates':
         if (value === 0) return 'text-green-400';
-        if (value <= (dataset?.data?.length || 0) * 0.05) return 'text-yellow-400';
+        if (value <= 50) return 'text-yellow-400';
         return 'text-red-400';
       default:
         return 'text-blue-400';
@@ -69,41 +69,41 @@ const Overview: React.FC = () => {
   ];
 
   // Column type distribution
-  const pieData = useMemo(() => {
-    if (!dataset?.columns) return [];
+  const { pieData } = useMemo(() => {
     const typeData: Record<string, number> = {};
     dataset.columns.forEach(col => {
       const type = col.type || 'Unknown';
       typeData[type] = (typeData[type] || 0) + 1;
     });
     const total = Object.values(typeData).reduce((sum, val) => sum + val, 0);
-    if (total === 0) return [];
-    return Object.entries(typeData).map(([name, value]) => ({
-      name,
-      value,
-      percentage: ((value / total) * 100).toFixed(1)
-    }));
-  }, [dataset, updateCounter]);
+    return {
+      pieData: Object.entries(typeData).map(([name, value]) => ({
+        name,
+        value,
+        percentage: ((value / total) * 100).toFixed(1)
+      }))
+    };
+  }, [dataset]);
 
   const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4'];
 
-  // This logic is safe and assumes col.missingCount might not exist
+  // Missing values with highlight
   const missingColumns = useMemo(() => {
-    if (!dataset?.columns) return [];
     return dataset.columns
       .filter(col => typeof col.missingCount === 'number' && col.missingCount > 0)
       .map(col => ({
         ...col,
         highlight: selectedType ? col.type === selectedType : true
       }));
-  }, [dataset, selectedType, updateCounter]);
+  }, [dataset, selectedType]);
 
+  // Max missing count for pulsing
   const maxMissingCount = useMemo(() => {
-    if (missingColumns.length === 0) return 0;
     return Math.max(...missingColumns.map(col => col.missingCount || 0));
   }, [missingColumns]);
 
   const previewData = dataset.data.slice(0, 5);
+  const generateColor = (index: number) => `hsl(${(index * 60) % 360}, 70%, 50%)`;
 
   return (
     <div className="space-y-6">
@@ -115,37 +115,35 @@ const Overview: React.FC = () => {
         className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700"
       >
         <h2 className="text-2xl font-bold text-white mb-2">Data Overview</h2>
-        {/* FIX: Added fallbacks for name and uploadedAt to prevent crashes */}
-        <p className="text-gray-400">Dataset: {dataset.name || 'Untitled Dataset'}</p>
-        <p className="text-gray-400 text-sm">Last Update: {new Date(dataset.updatedAt || Date.now()).toLocaleString()}</p>
+        <p className="text-gray-400">Dataset: {dataset.name}</p>
+        <p className="text-gray-400 text-sm">Uploaded: {dataset.uploadedAt.toLocaleString()}</p>
       </motion.div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="flex gap-6 overflow-x-auto py-2">
         {summaryCards.map((card, index) => {
           const Icon = card.icon;
-          const value = card.value || 0; // Fallback for the value itself
           return (
             <motion.div
-              key={`${card.title}-${updateCounter}`}
+              key={card.title}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: index * 0.1 }}
-              className={`${card.bgColor} rounded-lg p-6 border border-gray-700 backdrop-blur-sm hover:scale-105 transition-transform duration-200`}
+              className={`${card.bgColor} rounded-lg p-6 border border-gray-700 backdrop-blur-sm hover:scale-105 transition-transform duration-200 min-w-[200px]`}
             >
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-gray-400 text-sm">{card.title}</p>
                   <motion.p 
-                    className={`text-2xl font-bold ${getCardColor(card.title, value)}`} 
+                    className={`text-2xl font-bold ${getCardColor(card.title, Number(card.value))}`} 
                     initial={{ scale: 0.8 }} 
                     animate={{ scale: 1 }} 
                     transition={{ duration: 0.3, delay: index * 0.1 + 0.2 }}
                   >
-                    {value.toLocaleString()}
+                    {card.value.toLocaleString ? card.value.toLocaleString() : card.value}
                   </motion.p>
                 </div>
-                <Icon className={`h-8 w-8 ${getCardColor(card.title, value)}`} />
+                <Icon className={`h-8 w-8 ${getCardColor(card.title, Number(card.value))}`} />
               </div>
             </motion.div>
           );
@@ -167,19 +165,18 @@ const Overview: React.FC = () => {
                   data={pieData}
                   cx="50%"
                   cy="50%"
-                  innerRadius={60}
-                  outerRadius={100}
+                  innerRadius={40}
+                  outerRadius={80}
                   dataKey="value"
-                  labelLine={false}
                   label={({ name, percentage }) => `${name}: ${percentage}%`}
-                  onClick={(data) => setSelectedType(selectedType === data.name ? null : data.name)}
+                  onClick={(data) => setSelectedType(data.name)}
                   cursor="pointer"
                 >
                   {pieData.map((entry, index) => (
                     <Cell
                       key={`cell-${index}`}
-                      fill={COLORS[index % COLORS.length]}
-                      stroke={selectedType === entry.name ? '#fff' : 'none'}
+                      fill={COLORS[index] || generateColor(index)}
+                      stroke={selectedType === entry.name ? '#fff' : undefined}
                       strokeWidth={selectedType === entry.name ? 3 : 0}
                     />
                   ))}
@@ -197,7 +194,7 @@ const Overview: React.FC = () => {
                     );
                   }}
                 />
-                <Legend iconType="circle" />
+                <Legend verticalAlign="bottom" align="center" wrapperStyle={{ color: '#F3F4F6' }} />
               </RechartsPieChart>
             </ResponsiveContainer>
           ) : (
@@ -205,7 +202,7 @@ const Overview: React.FC = () => {
           )}
         </motion.div>
 
-        {/* Missing Values by Column */}
+        {/* Missing Values by Column with Pulse */}
         <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
           <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
             <TrendingUp className="h-5 w-5 mr-2 text-green-400" />
@@ -235,14 +232,26 @@ const Overview: React.FC = () => {
                     const isMax = col.missingCount === maxMissingCount && col.highlight;
                     const fillColor = isMax ? '#EF4444' : col.highlight ? '#F59E0B' : '#374151';
                     return (
-                      <Cell key={`barcell-${idx}`} fill={fillColor} />
+                      <Cell key={`barcell-${idx}`}>
+                        {isMax ? (
+                          <m.rect
+                            width="100%"
+                            height="100%"
+                            fill={fillColor}
+                            animate={{ scale: [1, 1.05, 1] }}
+                            transition={{ duration: 1, repeat: Infinity, repeatType: 'loop' }}
+                          />
+                        ) : (
+                          <rect width="100%" height="100%" fill={fillColor} />
+                        )}
+                      </Cell>
                     );
                   })}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-gray-400 text-center mt-12">No missing values detected in dataset</p>
+            <p className="text-gray-400 text-center mt-12">No missing values in dataset</p>
           )}
         </motion.div>
       </div>
@@ -270,11 +279,18 @@ const Overview: React.FC = () => {
                       key={col.name}
                       className={`p-3 text-gray-300 ${selectedType === col.type ? 'bg-gray-700/40 font-semibold' : ''}`}
                     >
-                      {String(row[col.name] ?? '-')}
+                      {row[col.name]?.toString() || '-'}
                     </td>
                   ))}
                 </tr>
               ))}
+              <tr className="border-t border-gray-600 font-semibold">
+                {dataset.columns.map(col => {
+                  const isNumeric = typeof dataset.data[0][col.name] === 'number';
+                  const total = isNumeric ? dataset.data.reduce((sum, row) => sum + (row[col.name] || 0), 0) : '-';
+                  return <td key={col.name} className="p-3 text-gray-300">{total}</td>;
+                })}
+              </tr>
             </tbody>
           </table>
         </div>
@@ -284,3 +300,4 @@ const Overview: React.FC = () => {
 };
 
 export default Overview;
+
