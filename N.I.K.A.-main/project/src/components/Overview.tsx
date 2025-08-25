@@ -1,310 +1,331 @@
-import React, { useState, useMemo } from 'react';
+// src/pages/Overview.tsx
+
+import React, { useState, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Database, 
-  TrendingUp, 
   AlertTriangle, 
-  Users,
+  Users, 
   BarChart3,
-  PieChart
+  Loader,
+  X
 } from 'lucide-react';
 import { useDataContext } from '../context/DataContext';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  PieChart as RechartsPieChart, Pie, Cell, Legend 
-} from 'recharts';
+  DataContextType, 
+  DataColumn, 
+  DataRow, 
+  SortConfig, 
+  NumericColumnStats, 
+  CategoricalColumnStats 
+} from '../types/data';
+
+// Import modular components
+import { SummaryCard } from '../components/overview/SummaryCard';
+import { ColumnTypesChart } from '../components/overview/ColumnTypesChart';
+import { MissingValuesChart } from '../components/overview/MissingValuesChart';
+import { DataPreviewTable } from '../components/overview/DataPreviewTable';
+import { CardSkeleton, ChartSkeleton, TableSkeleton } from '../components/overview/SkeletonLoaders';
+import ErrorBoundary from '../components/overview/ErrorBoundary';
+import { DetailsModal } from '../components/overview/DetailsModal';
+
+// --- UTILITY FUNCTIONS (Scoped to this file or moved to a utils file) ---
 
 /**
- * A helper function to render any cell value as a string, preserving its original format.
- * @param value - The data from a cell in the dataset.
- * @returns A string representation of the value.
+ * Calculates detailed statistics for a given column based on its type.
+ * @param column - The column object.
+ * @param data - The full dataset array.
+ * @returns An object containing stats, or null if type is unknown.
  */
-const renderCellValue = (value: any): string => {
-  // Display null or undefined values as a consistent placeholder
-  if (value === null || typeof value === 'undefined') {
-    return '-';
+const calculateColumnStats = (column: Pick<DataColumn, 'name' | 'type'>, data: DataRow[]): NumericColumnStats | CategoricalColumnStats | null => {
+  const values = data.map(row => row[column.name]);
+
+  if (column.type === 'numeric' || column.type === 'integer') {
+    const numericValues = values.map(Number).filter(n => !isNaN(n) && Number.isFinite(n));
+    if (numericValues.length === 0) return null;
+    
+    const sum = numericValues.reduce((a, b) => a + b, 0);
+    const mean = sum / numericValues.length;
+    const stdDev = Math.sqrt(numericValues.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b, 0) / numericValues.length);
+    
+    return {
+      min: Math.min(...numericValues),
+      max: Math.max(...numericValues),
+      mean: parseFloat(mean.toFixed(2)),
+      stdDev: parseFloat(stdDev.toFixed(2)),
+    };
   }
 
-  // For objects or arrays, stringify them to avoid displaying "[object Object]"
-  if (typeof value === 'object') {
-    return JSON.stringify(value);
+  if (column.type === 'categorical' || column.type === 'date') {
+    const valueCounts = values.reduce<Record<string, number>>((acc, val) => {
+      const key = String(val ?? 'NULL');
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    
+    return {
+      valueCounts,
+      uniqueValues: Object.keys(valueCounts).length,
+    };
   }
 
-  // For all other primitive types (string, number, boolean), convert to string
-  return String(value);
+  return null;
+};
+
+/**
+ * Determines the appropriate color for a summary card based on its value.
+ * @param title - The title of the card.
+ * @param value - The numeric value of the card.
+ * @param totalRows - The total number of rows in the dataset for context.
+ * @returns A Tailwind CSS color class string.
+ */
+const getCardColor = (title: string, value: number, totalRows: number): string => {
+  switch (title) {
+    case 'Missing Values':
+    case 'Duplicates':
+      if (value === 0) return 'text-green-400';
+      // Warning if over 5% of rows are affected
+      if (value <= (totalRows * 0.05)) return 'text-yellow-400';
+      return 'text-red-400';
+    default:
+      return 'text-blue-400';
+  }
 };
 
 
-const Overview: React.FC = () => {
-  const { dataset, dataSummary } = useDataContext();
-  const [selectedType, setSelectedType] = useState<string | null>(null);
+// --- MAIN OVERVIEW COMPONENT ---
 
-  // Memoize derived data to prevent recalculations on every render
-  const { pieData, missingColumns, maxMissingCount, previewData, columnTotals } = useMemo(() => {
-    if (!dataset) {
-      return { pieData: [], missingColumns: [], maxMissingCount: 0, previewData: [], columnTotals: {} };
+const Overview: React.FC = () => {
+  const { dataset: rawDataset, dataSummary, isLoading } = useDataContext() as DataContextType;
+  
+  // --- STATE MANAGEMENT ---
+
+  // State for interactive chart filtering
+  const [selectedType, setSelectedType] = useState<string | null>(null);
+  
+  // State for the preview table's sorting configuration
+  const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
+
+  // State for managing the details modal
+  const [modalData, setModalData] = useState<DataColumn | null>(null);
+
+  // State for filtering the preview table from chart interactions
+  const [previewFilter, setPreviewFilter] = useState<{ column: string; value: any } | null>(null);
+
+
+  // --- MEMOIZED DATA PROCESSING ---
+
+  /**
+   * The "brain" of the dashboard. This comprehensive useMemo hook performs all
+   * expensive calculations only when the source data changes. It now calculates
+   * detailed statistics for every column.
+   */
+  const { 
+    dataset,
+    pieData, 
+    missingColumns, 
+    maxMissingCount, 
+    previewData
+  } = useMemo(() => {
+    if (!rawDataset || !dataSummary) {
+      return { dataset: null, pieData: [], missingColumns: [], maxMissingCount: 0, previewData: [], columnTotals: {} };
     }
 
+    // Enhance dataset with detailed stats for each column
+    const enhancedColumns = rawDataset.columns.map(col => ({
+      ...col,
+      stats: calculateColumnStats(col, rawDataset.data),
+    }));
+    
+    const enhancedDataset = { ...rawDataset, columns: enhancedColumns };
+
     // Pie Chart Data for Column Types
-    const typeData: Record<string, number> = {};
-    dataset.columns.forEach(col => {
+    const typeData = enhancedColumns.reduce<Record<string, number>>((acc, col) => {
       const type = col.type || 'Unknown';
-      typeData[type] = (typeData[type] || 0) + 1;
-    });
-    const total = Object.values(typeData).reduce((sum, val) => sum + val, 0);
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    }, {});
+
+    const totalCols = Object.values(typeData).reduce((sum, val) => sum + val, 0);
     const calculatedPieData = Object.entries(typeData).map(([name, value]) => ({
       name,
       value,
-      percentage: total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'
+      percentage: totalCols > 0 ? ((value / totalCols) * 100).toFixed(1) : '0.0',
     }));
 
-    // Bar Chart Data for Missing Values
-    const calculatedMissingColumns = dataset.columns
-      .filter(col => typeof col.missingCount === 'number' && col.missingCount > 0)
+    // Bar Chart Data for Missing Values (with added percentage for enhanced tooltip)
+    const calculatedMissingColumns = enhancedColumns
+      .filter(col => col.missingCount > 0)
       .map(col => ({
         ...col,
-        highlight: selectedType ? col.type === selectedType : true
+        highlight: selectedType ? col.type === selectedType : true,
+        missingPercentage: ((col.missingCount / dataSummary.totalRows) * 100).toFixed(1),
       }));
 
-    const calculatedMaxMissing = Math.max(0, ...calculatedMissingColumns.map(col => col.missingCount || 0));
+    const calculatedMaxMissing = Math.max(0, ...calculatedMissingColumns.map(col => col.missingCount));
     
-    // Preview Data (Top 5 Rows)
-    const calculatedPreviewData = dataset.data.slice(0, 5);
-    
-    // Totals for numeric columns in the preview table footer
-    const totals: Record<string, string> = {};
-    dataset.columns.forEach(col => {
-      // Use the pre-calculated column type for a more reliable check
-      if (col.type === 'numeric' || col.type === 'integer') {
-        const total = dataset.data.reduce((sum, row) => {
-          const value = row[col.name];
-          // Ensure value is a valid number before adding
-          return sum + (typeof value === 'number' && !isNaN(value) ? value : 0);
-        }, 0);
-        totals[col.name] = total.toLocaleString();
-      } else {
-        totals[col.name] = ''; // Display nothing for non-numeric columns
-      }
-    });
+    // Process Preview Data (Sorting and Filtering)
+    let processedPreviewData = [...rawDataset.data];
 
+    // Apply filter from chart interactions
+    if (previewFilter) {
+      processedPreviewData = processedPreviewData.filter(row => {
+        const value = row[previewFilter.column];
+        return value === null || value === undefined || value === '';
+      });
+    }
+
+    // Apply sorting
+    if (sortConfig !== null) {
+      processedPreviewData.sort((a, b) => {
+        const valA = a[sortConfig.key];
+        const valB = b[sortConfig.key];
+        if (valA === null || valA === undefined) return 1;
+        if (valB === null || valB === undefined) return -1;
+        if (valA < valB) return sortConfig.direction === 'ascending' ? -1 : 1;
+        if (valA > valB) return sortConfig.direction === 'ascending' ? 1 : -1;
+        return 0;
+      });
+    }
+    
     return {
+      dataset: enhancedDataset,
       pieData: calculatedPieData,
       missingColumns: calculatedMissingColumns,
       maxMissingCount: calculatedMaxMissing,
-      previewData: calculatedPreviewData,
-      columnTotals: totals,
+      previewData: processedPreviewData,
     };
-  }, [dataset, selectedType]);
+  }, [rawDataset, dataSummary, selectedType, sortConfig, previewFilter]);
 
-  if (!dataset || !dataSummary) {
+
+  // --- EVENT HANDLERS ---
+  
+  /** Toggles the sorting configuration for the preview table. */
+  const handleSort = useCallback((key: string) => {
+    let direction: 'ascending' | 'descending' = 'ascending';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
+      direction = 'descending';
+    }
+    setSortConfig({ key, direction });
+  }, [sortConfig]);
+
+  /** Sets a filter for the preview table based on a clicked bar chart column. */
+  const handleBarClick = useCallback((columnName: string) => {
+    // If clicking the same bar again, clear the filter
+    if (previewFilter && previewFilter.column === columnName) {
+      setPreviewFilter(null);
+    } else {
+      setPreviewFilter({ column: columnName, value: null });
+    }
+  }, [previewFilter]);
+
+
+  // --- RENDER LOGIC ---
+
+  // 1. Loading State using Skeleton Components
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <p className="text-gray-400">No data available. Please upload a file to begin.</p>
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          {[...Array(4)].map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <ChartSkeleton />
+          <ChartSkeleton />
+        </div>
+        <TableSkeleton />
       </div>
     );
   }
-  
-  const getCardColor = (title: string, value: number) => {
-    switch(title) {
-      case 'Missing Values':
-      case 'Duplicates':
-        if (value === 0) return 'text-green-400';
-        if (value <= (dataset.data.length * 0.05)) return 'text-yellow-400'; // Warning if >5%
-        return 'text-red-400';
-      default:
-        return 'text-blue-400';
-    }
-  };
+
+  // 2. Empty State (after loading is complete)
+  if (!dataset || !dataSummary) {
+    return (
+      <div className="flex items-center justify-center h-96 text-gray-400">
+        <div className="text-center">
+          <Database className="mx-auto h-16 w-16 text-gray-600 mb-4" />
+          <h2 className="text-xl font-semibold text-white">No Data Available</h2>
+          <p className="mt-2">Please upload a file to begin the analysis.</p>
+        </div>
+      </div>
+    );
+  }
 
   const summaryCards = [
     { title: 'Total Rows', value: dataSummary.totalRows, icon: Database, bgColor: 'bg-blue-500/10' },
     { title: 'Total Columns', value: dataSummary.totalColumns, icon: BarChart3, bgColor: 'bg-green-500/10' },
     { title: 'Missing Values', value: dataSummary.missingValues, icon: AlertTriangle, bgColor: 'bg-yellow-500/10' },
-    { title: 'Duplicates', value: dataSummary.duplicates, icon: Users, bgColor: 'bg-red-500/10' }
+    { title: 'Duplicates', value: dataSummary.duplicates, icon: Users, bgColor: 'bg-red-500/10' },
   ];
 
-  const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4'];
-  const generateColor = (index: number) => `hsl(${(index * 60) % 360}, 70%, 50%)`;
-
+  // 3. Main Dashboard Render
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700"
-      >
-        <h2 className="text-2xl font-bold text-white mb-2">Data Overview</h2>
-        <p className="text-gray-400">Dataset: {dataset.name}</p>
-        {/* FIX: Added optional chaining (?.) and a fallback text to prevent crash */}
-        <p className="text-gray-400 text-sm">Uploaded: {dataset.uploadedAt?.toLocaleString() || 'Not available'}</p>
-      </motion.div>
+    <ErrorBoundary>
+      <div className="space-y-6">
+        {/* Details Modal - rendered conditionally */}
+        <DetailsModal column={modalData} onClose={() => setModalData(null)} />
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-        {summaryCards.map((card, index) => {
-          const Icon = card.icon;
-          return (
-            <motion.div
+        {/* Header */}
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700"
+        >
+          <h1 className="text-3xl font-bold text-white mb-2">Data Overview</h1>
+          <p className="text-gray-400">
+            Analysis for: <span className="font-semibold text-gray-200">{dataset.name}</span>
+          </p>
+          <p className="text-gray-400 text-sm">
+            Uploaded: {dataset.uploadedAt?.toLocaleString() || 'Not available'}
+          </p>
+        </motion.div>
+
+        {/* Summary Cards Section */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          {summaryCards.map((card, index) => (
+            <SummaryCard
               key={card.title}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: index * 0.1 }}
-              className={`${card.bgColor} rounded-lg p-6 border border-gray-700 backdrop-blur-sm hover:border-gray-500 transition-all duration-200`}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-400 text-sm">{card.title}</p>
-                  <p className={`text-3xl font-bold ${getCardColor(card.title, Number(card.value))}`}>
-                    {Number(card.value).toLocaleString()}
-                  </p>
-                </div>
-                <Icon className={`h-8 w-8 ${getCardColor(card.title, Number(card.value))}`} />
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
-
-      {/* Charts Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Column Types Distribution */}
-        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
-          <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
-            <PieChart className="h-5 w-5 mr-2 text-purple-400" />
-            Column Types Distribution
-          </h3>
-          {pieData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <RechartsPieChart>
-                <Pie
-                  data={pieData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={100}
-                  dataKey="value"
-                  paddingAngle={5}
-                  label={({ name, percentage }) => `${name} (${percentage}%)`}
-                  onClick={(data) => setSelectedType(prev => prev === data.name ? null : data.name)} // Toggle selection
-                  cursor="pointer"
-                >
-                  {pieData.map((entry, index) => (
-                    <Cell
-                      key={`cell-${index}`}
-                      fill={COLORS[index % COLORS.length] || generateColor(index)}
-                      stroke={selectedType === entry.name ? '#fff' : 'none'}
-                      strokeWidth={selectedType === entry.name ? 3 : 0}
-                    />
-                  ))}
-                </Pie>
-                <Tooltip
-                  content={({ payload }) => {
-                    if (!payload || payload.length === 0) return null;
-                    const data = payload[0].payload;
-                    return (
-                      <div className="bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white shadow-lg">
-                        <p><strong>{data.name}</strong></p>
-                        <p>Count: {data.value}</p>
-                        <p>Percentage: {data.percentage}%</p>
-                      </div>
-                    );
-                  }}
-                />
-                <Legend iconType="circle" />
-              </RechartsPieChart>
-            </ResponsiveContainer>
-          ) : (
-            <p className="text-gray-400 text-center mt-12">No column type data available</p>
-          )}
-        </motion.div>
-
-        {/* Missing Values by Column */}
-        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
-          <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
-            <TrendingUp className="h-5 w-5 mr-2 text-green-400" />
-            Missing Values by Column
-          </h3>
-          {missingColumns.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={missingColumns} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="name" stroke="#9CA3AF" fontSize={12} angle={-45} textAnchor="end" height={80} interval={0} />
-                <YAxis stroke="#9CA3AF" />
-                <Tooltip
-                  cursor={{ fill: 'rgba(107, 114, 128, 0.1)' }}
-                  content={({ payload }) => {
-                    if (!payload || payload.length === 0) return null;
-                    const data = payload[0].payload;
-                    return (
-                      <div className="bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white shadow-lg">
-                        <p><strong>{data.name}</strong></p>
-                        <p>Missing: {data.missingCount}</p>
-                        <p>Type: {data.type}</p>
-                      </div>
-                    );
-                  }}
-                />
-                <Bar dataKey="missingCount">
-                  {missingColumns.map((col, idx) => {
-                    const isMax = col.missingCount === maxMissingCount && col.highlight;
-                    const fillColor = isMax ? '#F87171' : col.highlight ? '#FBBF24' : '#4B5563';
-                    return <Cell key={`barcell-${idx}`} fill={fillColor} />;
-                  })}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex items-center justify-center h-full">
-               <p className="text-gray-400 text-center">No missing values found in the dataset! ✨</p>
-            </div>
-          )}
-        </motion.div>
-      </div>
-
-      {/* Data Preview Table */}
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.2 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
-        <h3 className="text-xl font-semibold text-white mb-4">Data Preview (First 5 Rows)</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-gray-700/20">
-              <tr className="border-b-2 border-gray-600">
-                {dataset.columns.map(col => (
-                  <th key={col.name} className="p-3 text-gray-300 font-semibold tracking-wider">
-                    {col.name}
-                    <span className="block text-xs text-purple-400 font-normal">{col.type}</span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {previewData.map((row, index) => (
-                <tr key={index} className="border-b border-gray-700 hover:bg-gray-700/20 transition-colors">
-                  {dataset.columns.map(col => (
-                    <td
-                      key={col.name}
-                      className={`p-3 text-gray-300 whitespace-nowrap ${selectedType === col.type ? 'bg-purple-500/10' : ''}`}
-                    >
-                      {renderCellValue(row[col.name])}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-            <tfoot className="bg-gray-700/20">
-                <tr className="border-t-2 border-gray-600">
-                    {dataset.columns.map(col => (
-                        <td key={`${col.name}-total`} className="p-3 text-gray-300 font-bold">
-                            {columnTotals[col.name]}
-                        </td>
-                    ))}
-                </tr>
-            </tfoot>
-          </table>
+              title={card.title}
+              value={card.value}
+              icon={card.icon}
+              bgColor={card.bgColor}
+              color={getCardColor(card.title, card.value, dataSummary.totalRows)}
+              index={index}
+              onClick={() => {
+                const relevantColumn = dataset.columns.find(c => c.name.toLowerCase().includes(card.title.toLowerCase().slice(0, 4)));
+                if(relevantColumn) setModalData(relevantColumn);
+              }}
+            />
+          ))}
         </div>
-      </motion.div>
-    </div>
+
+        {/* Charts Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <ColumnTypesChart
+            pieData={pieData}
+            selectedType={selectedType}
+            setSelectedType={setSelectedType}
+          />
+          <MissingValuesChart
+            missingColumns={missingColumns}
+            maxMissingCount={maxMissingCount}
+            onBarClick={handleBarClick}
+            activeFilterColumn={previewFilter?.column}
+          />
+        </div>
+
+        {/* Data Preview Table Section with enhanced props */}
+        <DataPreviewTable
+          columns={dataset.columns}
+          previewData={previewData}
+          selectedType={selectedType}
+          sortConfig={sortConfig}
+          onSort={handleSort}
+          activeFilterColumn={previewFilter?.column}
+        />
+      </div>
+    </ErrorBoundary>
   );
 };
 
