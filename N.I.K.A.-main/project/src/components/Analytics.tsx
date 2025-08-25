@@ -19,7 +19,7 @@ import {
   SigmaSquare,
   Table as TableIcon,
   TrendingUp,
-  TriangleAlert,
+  AlertTriangle,
 } from "lucide-react";
 import { useDataContext } from "../context/DataContext";
 
