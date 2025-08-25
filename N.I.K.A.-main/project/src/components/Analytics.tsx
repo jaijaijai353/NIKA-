@@ -24,25 +24,25 @@ import { useDataContext } from "../context/DataContext";
  * Analytics.tsx
  * --------------------------------------------------------------------------------------
  * Single-file, fully expanded, robust analytics component that renders:
- * - Summary Statistics (dynamic, data-driven)
- * - Distribution Analysis (selectable numeric column, multi-colored bars)
- * - Trend Analysis (selectable numeric column, line chart)
- * - Correlation Analysis (pairwise Pearson, selectable X/Y)
- * - Anomalies (z-score > threshold, highlighted in bar chart)
- * - Missingness & Cardinality (per column overview)
+ *  - Summary Statistics (dynamic, data-driven)
+ *  - Distribution Analysis (selectable numeric column, multi-colored bars)
+ *  - Trend Analysis (selectable numeric column, line chart)
+ *  - Correlation Analysis (pairwise Pearson, selectable X/Y)
+ *  - Anomalies (z-score > threshold, highlighted in bar chart)
+ *  - Missingness & Cardinality (per column overview)
  *
  * The component is defensive:
- * - Works with `dataset` { columns, data } from context.
- * - Avoids crashing on undefined/null using guards and defaults
- * - Shows friendly messages when data is insufficient
+ *  - Works if context exposes either `dataset` { columns, data } or plain `data` (array)
+ *  - Avoids crashing on undefined/null using guards and defaults
+ *  - Shows friendly messages when data is insufficient
  *
  * Styling:
- * - Tailwind utility classes (no external UI libs)
- * - Dark theme containers
+ *  - Tailwind utility classes (no external UI libs)
+ *  - Dark theme containers
  *
  * Recharts:
- * - Bar/Line/Scatter/Pie charts
- * - Multi-colored bars via <Cell>
+ *  - Bar/Line/Scatter/Pie charts
+ *  - Multi-colored bars via <Cell>
  *
  * No extra files created. Everything lives here.
  * ======================================================================================
@@ -100,10 +100,12 @@ type DatasetShape = {
   data?: DataRow[];
 };
 
-type ContextShape = {
-  dataset?: DatasetShape | null;
-  updateCounter?: number;
-} | any;
+type ContextShape =
+  | {
+      dataset?: DatasetShape | null;
+      data?: DataRow[] | null;
+    }
+  | any;
 
 const isFiniteNumber = (v: any) =>
   typeof v === "number" && Number.isFinite(v);
@@ -205,19 +207,16 @@ const uniqueCount = (values: any[]) => {
  * Data Normalization Helpers
  * ====================================================================================== */
 
-/** Extract rows and columns from the context's dataset object */
+/** Extract raw rows from context that may have dataset or data */
 const useRowsAndColumns = (ctx: ContextShape) => {
   const dataset: DatasetShape | null | undefined = ctx?.dataset ?? null;
-  // Use updateCounter to explicitly trigger re-memoization when data is cleaned.
-  const updateCounter = ctx?.updateCounter ?? 0;
+  const plainData: DataRow[] | null | undefined = ctx?.data ?? null;
 
-  // This hook now *only* uses `dataset` from the context to reflect the cleaned state.
   const rows: DataRow[] = useMemo(() => {
-    if (dataset && Array.isArray(dataset.data)) {
-      return dataset.data;
-    }
+    if (dataset && Array.isArray(dataset.data)) return dataset.data as DataRow[];
+    if (Array.isArray(plainData)) return plainData as DataRow[];
     return [];
-  }, [dataset, updateCounter]); // Re-run when dataset or counter changes
+  }, [dataset, plainData]);
 
   // Build columns from dataset.columns if available; else infer from first row
   const columns = useMemo(() => {
@@ -228,7 +227,7 @@ const useRowsAndColumns = (ctx: ContextShape) => {
       return Object.keys(rows[0]);
     }
     return [];
-  }, [dataset, rows, updateCounter]); // Re-run when dataset, rows, or counter changes
+  }, [dataset, rows]);
 
   // Types inference if types are not given
   const numericColumns = useMemo(() => {
@@ -256,7 +255,7 @@ const useRowsAndColumns = (ctx: ContextShape) => {
       }
     }
     return ncs;
-  }, [dataset, rows, columns, updateCounter]);
+  }, [dataset, rows, columns]);
 
   const categoricalColumns = useMemo(() => {
     // from dataset metadata if present
@@ -270,11 +269,10 @@ const useRowsAndColumns = (ctx: ContextShape) => {
     const set = new Set(columns);
     for (const numCol of numericColumns) set.delete(numCol);
     return Array.from(set);
-  }, [dataset, columns, numericColumns, updateCounter]);
+  }, [dataset, columns, numericColumns]);
 
   return { rows, columns, numericColumns, categoricalColumns, dataset };
 };
-
 
 /* ======================================================================================
  * Derived Data Builders
@@ -557,19 +555,24 @@ const cardinalityInsight = (cards: { column: string; unique: number }[]) => {
 const Analytics: React.FC = () => {
   const context = useDataContext() as ContextShape;
   
-  // Debug: Log when component renders or context data changes.
+  // Debug: Log when component renders
   console.log("Analytics component rendered:", { 
     hasDataset: !!context.dataset, 
     dataLength: context.dataset?.data?.length,
     updateCounter: context.updateCounter 
   });
   
-  // This useEffect confirms the component is aware of updates from the context.
+  // Force re-render when update counter changes
   useEffect(() => {
-    console.log("Analytics: updateCounter changed to:", context.updateCounter);
+    console.log("Analytics: Update counter changed to:", context.updateCounter);
   }, [context.updateCounter]);
+  
+  // Force re-render when dataset data changes
+  useEffect(() => {
+    console.log("Analytics: Dataset data length changed to:", context.dataset?.data?.length);
+  }, [context.dataset?.data?.length]);
 
-  // Normalize rows/columns/types from the single `dataset` source of truth.
+  // Normalize rows/columns/types
   const { rows, columns, numericColumns, categoricalColumns } = useRowsAndColumns(context);
 
   // UI State
@@ -581,32 +584,23 @@ const Analytics: React.FC = () => {
   // Initialize defaults when columns change
   useEffect(() => {
     if (numericColumns.length > 0) {
-      // Only set if not already set or if the current selection is no longer valid
-      if (!selectedNumeric || !numericColumns.includes(selectedNumeric)) {
-        setSelectedNumeric(numericColumns[0]);
-      }
-      if (!selectedNumericTrend || !numericColumns.includes(selectedNumericTrend)) {
-        setSelectedNumericTrend(numericColumns[0]);
-      }
-      if (!selectedNumericAnomaly || !numericColumns.includes(selectedNumericAnomaly)) {
-        setSelectedNumericAnomaly(numericColumns[0]);
-      }
+      if (!selectedNumeric) setSelectedNumeric(numericColumns[0]);
+      if (!selectedNumericTrend) setSelectedNumericTrend(numericColumns[0]);
+      if (!selectedNumericAnomaly) setSelectedNumericAnomaly(numericColumns[0]);
     } else {
       setSelectedNumeric("");
       setSelectedNumericTrend("");
       setSelectedNumericAnomaly("");
     }
-  }, [numericColumns]);
+  }, [numericColumns, selectedNumeric, selectedNumericTrend, selectedNumericAnomaly]);
 
   useEffect(() => {
     if (categoricalColumns.length > 0) {
-      if (!selectedCat || !categoricalColumns.includes(selectedCat)) {
-        setSelectedCat(categoricalColumns[0]);
-      }
+      if (!selectedCat) setSelectedCat(categoricalColumns[0]);
     } else {
       setSelectedCat("");
     }
-  }, [categoricalColumns]);
+  }, [categoricalColumns, selectedCat]);
 
   // Derived data
   const summary = useSummary(rows, columns, numericColumns);
@@ -665,7 +659,7 @@ const Analytics: React.FC = () => {
           <div>
             <h2 className="text-2xl font-bold text-gray-100">Advanced Analytics</h2>
             <p className="text-gray-400 text-sm">
-              Fully data-driven insights based on your cleaned dataset.
+              Fully data-driven insights based on your uploaded dataset. No pre-recorded content.
             </p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1151,3 +1145,4 @@ const Analytics: React.FC = () => {
 };
 
 export default Analytics;
+
