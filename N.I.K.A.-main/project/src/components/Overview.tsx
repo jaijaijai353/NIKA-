@@ -148,7 +148,8 @@ const Overview: React.FC = () => {
       >
         <h2 className="text-2xl font-bold text-white mb-2">Data Overview</h2>
         <p className="text-gray-400">Dataset: {dataset.name}</p>
-        <p className="text-gray-400 text-sm">Uploaded: {dataset.uploadedAt.toLocaleString()}</p>
+        {/* FIX: Added optional chaining (?.) and a fallback text to prevent crash */}
+        <p className="text-gray-400 text-sm">Uploaded: {dataset.uploadedAt?.toLocaleString() || 'Not available'}</p>
       </motion.div>
 
       {/* Summary Cards */}
