@@ -1,3 +1,4 @@
+// src/components/AIInsights.tsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -40,7 +41,7 @@ import { useDataContext } from "../context/DataContext";
  * AIInsights.tsx
  *
  * Single-file, expanded AI-powered insights panel.
- * - Reads the cleaned dataset from useDataContext()
+ * - Reads uploaded dataset from useDataContext()
  * - Computes summary stats, trends, correlations, anomalies, categorical breakdowns
  * - Generates dynamic insight objects (type/title/desc/confidence/importance/meta)
  * - UI: search, filters, sort, collapsible groups, sparkline mini-charts, drilldown modal
@@ -188,42 +189,70 @@ const zScoreOutliers = (arr: number[], thresh = 2.5) => {
    =========================== */
 
 /**
- * Normalizes data from the DataContext.
- * - Exclusively uses `dataset` to reflect the cleaned data state.
- * - Uses `updateCounter` to explicitly trigger re-memoization after cleaning.
- * - Returns memoized rows and inferred column lists.
+ * Normalizes whatever context might give us:
+ * - dataset: { columns, data } OR
+ * - uploadedData or data: Row[]
+ *
+ * Returns rows array and inferred columns lists.
  */
 const useNormalizedData = () => {
-  const { dataset, updateCounter } = useDataContext();
+  const ctx = useDataContext() as any;
+  const dataset = ctx?.dataset ?? null;
+  const plain = ctx?.data ?? ctx?.uploadedData ?? null;
 
-  const { rows, columns, numericColumns, categoricalColumns } = useMemo(() => {
-    console.log("AIInsights: Normalizing data and columns due to update.");
-    if (!dataset?.data || !dataset?.columns) {
-      return { rows: [], columns: [], numericColumns: [], categoricalColumns: [] };
+  const rows: Row[] = useMemo(() => {
+    if (dataset && Array.isArray(dataset.data)) return dataset.data as Row[];
+    if (Array.isArray(plain)) return plain as Row[];
+    return [];
+  }, [dataset, plain]);
+
+  const columns: string[] = useMemo(() => {
+    if (dataset && Array.isArray(dataset.columns) && dataset.columns.length > 0) {
+      try {
+        return dataset.columns.map((c: any) => (typeof c === "string" ? c : c.name));
+      } catch {
+        return [];
+      }
     }
+    if (rows.length > 0) return Object.keys(rows[0]);
+    return [];
+  }, [dataset, rows]);
 
-    const rows = dataset.data;
-    const allColumns = dataset.columns;
+  const numericColumns: string[] = useMemo(() => {
+    if (dataset && Array.isArray(dataset.columns) && dataset.columns.length > 0) {
+      const nums = dataset.columns
+        .filter((c: any) =>
+          c && (c.type === "numeric" || c.type === "number" || c.type === "int" || c.type === "float")
+        )
+        .map((c: any) => (typeof c === "string" ? c : c.name));
+      if (nums.length > 0) return nums;
+    }
+    const out: string[] = [];
+    columns.forEach((col) => {
+      for (let i = 0; i < rows.length; i++) {
+        const v = rows[i]?.[col];
+        if (!isMissing(v)) {
+          const n = toNumber(v);
+          if (!Number.isNaN(n)) out.push(col);
+          break;
+        }
+      }
+    });
+    return out;
+  }, [dataset, columns, rows]);
 
-    const numericColumns = allColumns
-      .filter((c) => ["Number", "Integer", "Float", "Currency", "Percentage"].includes(String(c.type)))
-      .map((c) => c.name);
-
-    const categoricalColumns = allColumns
-      .filter((c) => !numericColumns.includes(c.name))
-      .map((c) => c.name);
-
-    return {
-      rows,
-      columns: allColumns.map((c) => c.name),
-      numericColumns,
-      categoricalColumns,
-    };
-  }, [dataset, updateCounter]);
+  const categoricalColumns: string[] = useMemo(() => {
+    if (dataset && Array.isArray(dataset.columns) && dataset.columns.length > 0) {
+      const cats = dataset.columns
+        .filter((c: any) => c && (c.type === "categorical" || c.type === "string" || c.type === "enum"))
+        .map((c: any) => (typeof c === "string" ? c : c.name));
+      if (cats.length > 0) return cats;
+    }
+    return columns.filter((c) => !numericColumns.includes(c));
+  }, [dataset, columns, numericColumns]);
 
   return { rows, columns, numericColumns, categoricalColumns };
 };
-
 
 /* ===========================
    Insight builder
@@ -242,8 +271,8 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
     insights.push({
       id: "no-data",
       type: "quality",
-      title: "No data available for analysis",
-      description: "Please upload or clean your data to generate insights. This panel will automatically update.",
+      title: "No data available",
+      description: "Please upload data to generate insights. This panel will automatically update when a dataset is available.",
       confidence: 0.9,
       importance: "high",
     });
@@ -254,7 +283,7 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
     id: "dataset-overview",
     type: "other",
     title: `Dataset contains ${N} rows and ${allCols.length} columns`,
-    description: `The current dataset has ${N} rows. Detected ${numericCols.length} numeric and ${catCols.length} categorical columns for analysis.`,
+    description: `This dataset has ${N} rows and ${allCols.length} columns. ${numericCols.length} numeric columns detected and ${catCols.length} categorical columns detected.`,
     confidence: 0.85,
     importance: "low",
   });
@@ -439,6 +468,7 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
   });
 
   // --- 7. Recommendations & transformations (generated heuristically)
+  // Example heuristics:
   if (numericCols.length > 0 && catCols.length > 0) {
     insights.push({
       id: "recommend-features",
@@ -449,11 +479,20 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
       confidence: 0.7,
       importance: "medium",
     });
+  } else if (numericCols.length > 0) {
+    insights.push({
+      id: "recommend-normalize",
+      type: "recommendation",
+      title: "Normalization suggestion",
+      description: "Some numeric columns appear skewed. Consider log-transform or scaling to stabilize variance for modeling.",
+      confidence: 0.68,
+      importance: "low",
+    });
   }
 
-  // --- 8. Segmentation hint
+  // --- 8. Segmentation hint (if a categorical column has a clear top group)
   catCard.forEach((c) => {
-    if (c.total > 0 && c.unique > 1 && c.unique < N / 2) {
+    if (c.total > 0 && c.unique > 1) {
       const counts = new Map<string, number>();
       for (const r of rows) {
         const v = r?.[c.column];
@@ -461,7 +500,7 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
         counts.set(key, (counts.get(key) || 0) + 1);
       }
       const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-      if (sorted.length > 1 && sorted[0][1] > sorted[1][1] * 2 && sorted[0][1] > N * 0.2) {
+      if (sorted.length > 1 && sorted[0][1] > sorted[1][1] * 2) {
         insights.push({
           id: `segmentation-${c.column}`,
           type: "segmentation",
@@ -475,6 +514,17 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
     }
   });
 
+  // --- 9. Final catch-all: top-k suggestions summary
+  insights.push({
+    id: "summary-actions",
+    type: "recommendation",
+    title: "Top suggested next actions",
+    description:
+      "1) Inspect and impute or remove columns with high missingness. 2) Handle outliers in flagged numeric columns. 3) Explore strong correlations and consider additional visuals. 4) Apply normalization to skewed columns before modeling.",
+    confidence: 0.8,
+    importance: "high",
+  });
+
   return insights;
 };
 
@@ -482,13 +532,18 @@ const buildInsights = (rows: Row[], numericCols: string[], catCols: string[], al
    UI: big component
    =========================== */
 
+const clamp = (v: number, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+
+const formatPct = (v: number) => `${Math.round(v * 100)}%`;
+
 /* Small sparkline component using LineChart (recharts) */
 const Sparkline: React.FC<{ data: { x: number; y: number }[]; color?: string }> = ({ data, color = "#00BFA6" }) => {
   if (!data || data.length === 0)
     return <div className="h-8 w-24 flex items-center justify-center text-xs text-gray-400">no data</div>;
+  const mapped = data.map((d, i) => ({ x: d.x, y: d.y }));
   return (
     <ResponsiveContainer width={100} height={36}>
-      <LineChart data={data}>
+      <LineChart data={mapped}>
         <Line type="monotone" dataKey="y" stroke={color} dot={false} strokeWidth={2} />
       </LineChart>
     </ResponsiveContainer>
@@ -565,6 +620,7 @@ const DrilldownModal: React.FC<{
           <div className="bg-[#0F1418] p-3 rounded-lg border border-gray-800">
             <h4 className="text-sm text-gray-300 mb-2">Actionable suggestions</h4>
             <div className="text-xs text-gray-200 space-y-2">
+              {/* heuristics based on type */}
               {insight.type === "anomaly" && (
                 <>
                   <div>- Inspect rows with extreme values for data entry errors.</div>
@@ -583,21 +639,20 @@ const DrilldownModal: React.FC<{
                   <div>- Use scatterplot visualizations and regression diagnostics.</div>
                 </>
               )}
-               {insight.type === "quality" && (
-                <>
-                  <div>- Navigate to the Data Cleaning tab to address this issue.</div>
-                  <div>- Impute missing values or remove columns with low utility.</div>
-                </>
-              )}
               {insight.type === "recommendation" && (
                 <div>- Apply the recommended transformations and re-evaluate model performance.</div>
               )}
               <div className="mt-3 flex gap-2">
                 <button className="px-3 py-1 bg-[#1F2937] rounded-lg text-sm text-white">Save Insight</button>
                 <button className="px-3 py-1 bg-[#0B1220] border border-gray-700 rounded-lg text-sm text-gray-200">Export CSV</button>
+                <button className="px-3 py-1 bg-[#072E2F] rounded-lg text-sm text-teal-300">Apply Filter</button>
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="mt-6 text-xs text-gray-400">
+          <div>Meta: {insight.meta ? JSON.stringify(Object.fromEntries(Object.entries(insight.meta).slice(0, 5))) : "{}"}</div>
         </div>
       </motion.div>
     </div>
@@ -609,12 +664,24 @@ const DrilldownModal: React.FC<{
    =========================== */
 
 const AIInsights: React.FC = () => {
-  const { updateCounter } = useDataContext();
-
-  // Debug: Log when component renders based on its direct dependency
+  const ctx = useDataContext() as any;
+  
+  // Debug: Log when component renders
+  console.log("AIInsights component rendered:", { 
+    hasDataset: !!ctx.dataset, 
+    dataLength: ctx.dataset?.data?.length,
+    updateCounter: ctx.updateCounter 
+  });
+  
+  // Force re-render when update counter changes
   useEffect(() => {
-    console.log("AIInsights: Component re-rendered because updateCounter changed to:", updateCounter);
-  }, [updateCounter]);
+    console.log("AIInsights: Update counter changed to:", ctx.updateCounter);
+  }, [ctx.updateCounter]);
+  
+  // Force re-render when dataset data changes
+  useEffect(() => {
+    console.log("AIInsights: Dataset data length changed to:", ctx.dataset?.data?.length);
+  }, [ctx.dataset?.data?.length]);
 
   const { rows, columns, numericColumns, categoricalColumns } = useNormalizedData();
 
@@ -623,18 +690,19 @@ const AIInsights: React.FC = () => {
   const [filterType, setFilterType] = useState<InsightType | "all">("all");
   const [importanceFilter, setImportanceFilter] = useState<"all" | "high" | "medium" | "low">("all");
   const [sortBy, setSortBy] = useState<"confidence" | "importance" | "type">("confidence");
+  const [collapsedTypes, setCollapsedTypes] = useState<Record<string, boolean>>({});
   const [selectedInsight, setSelectedInsight] = useState<Insight | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [insights, setInsights] = useState<Insight[]>([]);
 
-  // Derive insights directly from data using useMemo for automatic refresh.
-  const insights = useMemo(() => {
-    console.log("AIInsights: Re-generating AI insights because underlying data changed.");
-    // This function is computationally expensive, so memoizing it is crucial.
-    return buildInsights(rows, numericColumns, categoricalColumns, columns);
+  // Build insights when data changes
+  useEffect(() => {
+    const list = buildInsights(rows, numericColumns, categoricalColumns, columns);
+    setInsights(list);
   }, [rows, numericColumns, categoricalColumns, columns]);
 
   // Filtering / searching / sorting
-  const filteredInsights = useMemo(() => {
+  const filtered = useMemo(() => {
     let items = insights.slice();
     if (filterType !== "all") items = items.filter((i) => i.type === filterType);
     if (importanceFilter !== "all") items = items.filter((i) => i.importance === importanceFilter);
@@ -653,7 +721,7 @@ const AIInsights: React.FC = () => {
     return items;
   }, [insights, filterType, importanceFilter, query, sortBy]);
 
-  // counts for the header
+  // counts
   const counts = useMemo(() => {
     return {
       total: insights.length,
@@ -664,6 +732,10 @@ const AIInsights: React.FC = () => {
         insights.length === 0 ? 0 : insights.reduce((s, i) => s + (i.confidence || 0), 0) / insights.length,
     };
   }, [insights]);
+
+  const toggleCollapse = (type: string) => {
+    setCollapsedTypes((c) => ({ ...c, [type]: !c[type] }));
+  };
 
   const openDrill = (ins: Insight) => {
     setSelectedInsight(ins);
@@ -677,24 +749,35 @@ const AIInsights: React.FC = () => {
 
   /* UI helpers */
   const getIcon = (type: InsightType) => {
-    // ... (rest of getIcon, importanceClass, confidenceColor, InsightCard are unchanged)
     switch (type) {
-      case "anomaly": return AlertTriangle;
-      case "trend": return TrendingUp;
-      case "correlation": return Target;
-      case "recommendation": return Lightbulb;
-      case "quality": return Zap;
-      case "categorical": return Columns;
-      case "segmentation": return FileText;
-      default: return Brain;
+      case "anomaly":
+        return AlertTriangle;
+      case "trend":
+        return TrendingUp;
+      case "correlation":
+        return Target;
+      case "recommendation":
+        return Lightbulb;
+      case "quality":
+        return Zap;
+      case "categorical":
+        return Columns;
+      case "segmentation":
+        return FileText;
+      default:
+        return Brain;
     }
   };
 
   const importanceClass = (imp: Insight["importance"]) => {
     switch (imp) {
-      case "high": return "border-red-500 bg-red-500/10 text-red-400";
-      case "medium": return "border-yellow-500 bg-yellow-500/10 text-yellow-400";
-      case "low": default: return "border-blue-500 bg-blue-500/10 text-blue-400";
+      case "high":
+        return "border-red-500 bg-red-500/10 text-red-400";
+      case "medium":
+        return "border-yellow-500 bg-yellow-500/10 text-yellow-400";
+      case "low":
+      default:
+        return "border-blue-500 bg-blue-500/10 text-blue-400";
     }
   };
 
@@ -722,6 +805,7 @@ const AIInsights: React.FC = () => {
           <div className={`p-2 rounded-lg ${impClass}`}>
             <Icon className="h-5 w-5" />
           </div>
+
           <div className="flex-1">
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
@@ -730,6 +814,7 @@ const AIInsights: React.FC = () => {
                 </h4>
                 <p className="text-xs text-gray-300 mt-2 line-clamp-3">{insight.description}</p>
               </div>
+
               <div className="flex-shrink-0 text-right">
                 <div className="flex items-center gap-2">
                   <Star className={`h-4 w-4 ${confidenceColor(insight.confidence)}`} />
@@ -737,24 +822,41 @@ const AIInsights: React.FC = () => {
                     {Math.round((insight.confidence || 0) * 100)}%
                   </div>
                 </div>
+
                 <div className="mt-2 text-xs">
                   <span className={`px-2 py-1 rounded-full text-xs font-medium ${impClass}`}>{insight.importance}</span>
                 </div>
               </div>
             </div>
+
+            {/* optional meta sparkline for trend or numeric insights */}
             {insight.meta?.series && Array.isArray(insight.meta.series) && insight.meta.series.length > 0 && (
               <div className="mt-3">
                 <Sparkline data={insight.meta.series.slice(-30)} color={PALETTE[index % PALETTE.length]} />
               </div>
             )}
+
             <div className="mt-3 flex items-center justify-between">
               <div className="text-xs text-gray-400">Type: {insight.type}</div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={(e) => { e.stopPropagation(); openDrill(insight); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openDrill(insight);
+                  }}
                   className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs"
                 >
                   Explore <ArrowRight className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // placeholder for action
+                    navigator.clipboard?.writeText(insight.title);
+                  }}
+                  className="text-gray-400 hover:text-gray-200 text-xs"
+                >
+                  Copy title
                 </button>
               </div>
             </div>
@@ -769,23 +871,25 @@ const AIInsights: React.FC = () => {
      =========================== */
 
   return (
-    <div className="p-6">
-        {/* Header */}
-        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+    <div className="space-y-6 p-6">
+      {/* Header */}
+      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
         <div className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-5 border border-gray-700">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <Brain className="h-7 w-7 text-purple-400" />
               <div>
                 <h2 className="text-xl font-bold text-white">AI Insights</h2>
-                <p className="text-xs text-gray-400">Data-driven observations based on your cleaned dataset.</p>
+                <p className="text-xs text-gray-400">Data-driven observations, recommendations and actions based on your uploaded dataset.</p>
               </div>
             </div>
+
             <div className="flex items-center gap-3">
               <div className="text-xs text-gray-400">Avg Confidence</div>
               <div className="text-sm font-bold text-white">{Math.round((counts.avgConfidence || 0) * 100)}%</div>
               <button
                 onClick={() => {
+                  // export summarized insights as JSON
                   const payload = JSON.stringify({ insights, generatedAt: new Date().toISOString() }, null, 2);
                   const blob = new Blob([payload], { type: "application/json" });
                   const url = URL.createObjectURL(blob);
@@ -814,6 +918,7 @@ const AIInsights: React.FC = () => {
               />
               <Search className="absolute right-3 top-2.5 text-gray-400" />
             </div>
+
             <div className="flex items-center gap-2">
               <select
                 value={filterType}
@@ -829,6 +934,7 @@ const AIInsights: React.FC = () => {
                 <option value="categorical">Categorical</option>
                 <option value="segmentation">Segmentation</option>
               </select>
+
               <select
                 value={importanceFilter}
                 onChange={(e) => setImportanceFilter(e.target.value as any)}
@@ -840,6 +946,7 @@ const AIInsights: React.FC = () => {
                 <option value="low">Low</option>
               </select>
             </div>
+
             <div className="flex items-center justify-end gap-2">
               <select
                 value={sortBy}
@@ -855,18 +962,138 @@ const AIInsights: React.FC = () => {
         </div>
       </motion.div>
 
-        {/* Insights grid */}
-        <div className="mt-6 grid grid-cols-1 gap-4">
-            {filteredInsights.length === 0 ? (
-                <div className="bg-[#0F1418] border border-gray-800 rounded-xl p-6 text-gray-400">
-                    No insights match your filters/search.
-                </div>
-            ) : (
-                filteredInsights.map((ins, idx) => (
-                    <InsightCard key={`${ins.id}-${updateCounter}`} insight={ins} index={idx} />
-                ))
-            )}
+      {/* Overview tiles */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-[#0E1113] border border-gray-800 rounded-xl p-4">
+          <div className="text-xs text-gray-400">Total Insights</div>
+          <div className="text-2xl font-bold text-white">{counts.total}</div>
         </div>
+
+        <div className="bg-[#0E1113] border border-gray-800 rounded-xl p-4">
+          <div className="text-xs text-gray-400">High priority</div>
+          <div className="text-2xl font-bold text-red-400">{counts.high}</div>
+        </div>
+
+        <div className="bg-[#0E1113] border border-gray-800 rounded-xl p-4">
+          <div className="text-xs text-gray-400">Medium priority</div>
+          <div className="text-2xl font-bold text-yellow-400">{counts.medium}</div>
+        </div>
+
+        <div className="bg-[#0E1113] border border-gray-800 rounded-xl p-4">
+          <div className="text-xs text-gray-400">Low priority</div>
+          <div className="text-2xl font-bold text-blue-400">{counts.low}</div>
+        </div>
+      </div>
+
+      {/* Insights grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-4">
+          {filtered.length === 0 ? (
+            <div className="bg-[#0F1418] border border-gray-800 rounded-xl p-6 text-gray-400">
+              No insights match your filters/search.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              {filtered.map((ins, idx) => (
+                <InsightCard key={ins.id} insight={ins} index={idx} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right rail: details & quick charts */}
+        <div className="space-y-4">
+          <div className="bg-[#0F1418] border border-gray-800 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-semibold text-white">Quick Stats</h4>
+                <p className="text-xs text-gray-400">Snapshot of dataset health & suggestions</p>
+              </div>
+              <div>
+                <button
+                  onClick={() => {
+                    // refresh insights manually
+                    const list = buildInsights(rows, numericColumns, categoricalColumns, columns);
+                    setInsights(list);
+                  }}
+                  className="px-2 py-1 bg-[#0B1220] rounded-lg border border-gray-700 text-sm text-gray-200"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div className="bg-[#081015] p-3 rounded-md">
+                <div className="text-xs text-gray-400">Numeric cols</div>
+                <div className="text-lg font-bold text-white">{numericColumns.length}</div>
+              </div>
+              <div className="bg-[#081015] p-3 rounded-md">
+                <div className="text-xs text-gray-400">Categorical cols</div>
+                <div className="text-lg font-bold text-white">{categoricalColumns.length}</div>
+              </div>
+              <div className="bg-[#081015] p-3 rounded-md">
+                <div className="text-xs text-gray-400">Rows</div>
+                <div className="text-lg font-bold text-white">{rows.length}</div>
+              </div>
+              <div className="bg-[#081015] p-3 rounded-md">
+                <div className="text-xs text-gray-400">Avg confidence</div>
+                <div className="text-lg font-bold text-white">{Math.round((counts.avgConfidence || 0) * 100)}%</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#0F1418] border border-gray-800 rounded-xl p-4">
+            <h4 className="text-sm font-semibold text-white">Top recommendations</h4>
+            <div className="mt-3 space-y-2">
+              {insights
+                .filter((i) => i.type === "recommendation")
+                .slice(0, 4)
+                .map((r) => (
+                  <div key={r.id} className="bg-[#0B0F12] p-3 rounded-md border border-gray-800">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-gray-200">{r.title}</div>
+                      <div className="text-xs text-gray-400">{Math.round((r.confidence || 0) * 100)}%</div>
+                    </div>
+                    <div className="text-xs text-gray-400 mt-2 line-clamp-2">{r.description}</div>
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          <div className="bg-[#0F1418] border border-gray-800 rounded-xl p-4">
+            <h4 className="text-sm font-semibold text-white">Quick Visual</h4>
+            {numericColumns.length > 0 ? (
+              <div className="h-40">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart
+                    data={rows
+                      .slice(0, 200)
+                      .map((r, i) => ({ index: i + 1, value: toNumber(r[numericColumns[0]]) }))
+                      .filter((d) => Number.isFinite(d.value))}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#0f1720" />
+                    <XAxis dataKey="index" stroke="#9CA3AF" />
+                    <YAxis stroke="#9CA3AF" />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: "#0B0E13",
+                        border: "1px solid #1f2937",
+                        borderRadius: 8,
+                        color: "#E5E7EB",
+                      }}
+                    />
+                    <Area type="monotone" dataKey="value" stroke="#26C6DA" fill="#022b2b" fillOpacity={0.4} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="text-gray-400">No numeric columns for quick visual.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
       <DrilldownModal open={modalOpen} onClose={closeDrill} insight={selectedInsight} rows={rows} />
     </div>
   );
