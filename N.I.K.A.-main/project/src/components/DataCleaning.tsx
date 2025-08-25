@@ -412,7 +412,7 @@ const DataCleaning: React.FC = () => {
   // Local UI state
   // -------------------------------------------------------------
   const [actions, setActions] = useState<CleaningAction[]>([]);
-  
+ 
   // NEW: State to manage the values of the scale inputs without direct DOM access
   const [scaleInputs, setScaleInputs] = useState<Record<string, { min: string; max: string }>>({});
 
@@ -734,7 +734,7 @@ const DataCleaning: React.FC = () => {
     setDataset({ columns: nextColumns, data: finalCleanedData });
     setActions([]);
     toast.success("Cleaning recipe applied successfully!");
-    
+   
   }, [preview, originalDataset, setDataset, actions]);
 
   const handleReset = useCallback(() => {
@@ -791,7 +791,7 @@ const DataCleaning: React.FC = () => {
   const handleRoundSubmit = (value: string, name: string) => {
     const places = Number(value);
     if (!Number.isFinite(places)) return;
-     handleAddAction({
+      handleAddAction({
         type: "NUMBER_ROUND",
         description: `Round '${name}' to ${places} decimals`,
         payload: { columnName: name, roundTo: places },
@@ -892,8 +892,8 @@ const DataCleaning: React.FC = () => {
                           }
                         }}
                         onBlur={(e) => {
-                           handleCustomFillSubmit((e.target as HTMLInputElement).value, name);
-                           (e.target as HTMLInputElement).value = "";
+                            handleCustomFillSubmit((e.target as HTMLInputElement).value, name);
+                            (e.target as HTMLInputElement).value = "";
                         }}
                       />
                     </div>
@@ -1078,16 +1078,16 @@ const DataCleaning: React.FC = () => {
                           min={0} max={10}
                           placeholder="Decimals"
                           className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
-                           onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                                handleRoundSubmit((e.target as HTMLInputElement).value, name);
-                                (e.target as HTMLInputElement).value = "";
-                            }
-                          }}
-                          onBlur={(e) => {
-                            handleRoundSubmit((e.target as HTMLInputElement).value, name);
-                            (e.target as HTMLInputElement).value = "";
-                          }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                  handleRoundSubmit((e.target as HTMLInputElement).value, name);
+                                  (e.target as HTMLInputElement).value = "";
+                              }
+                            }}
+                            onBlur={(e) => {
+                              handleRoundSubmit((e.target as HTMLInputElement).value, name);
+                              (e.target as HTMLInputElement).value = "";
+                            }}
                         />
                       </div>
                       <div className="col-span-3 text-right">
@@ -1145,7 +1145,7 @@ const DataCleaning: React.FC = () => {
                           const outMaxRaw = scaleInputs[name]?.max ?? "1";
                           const outMin = outMinRaw === "" ? 0 : Number(outMinRaw);
                           const outMax = outMaxRaw === "" ? 1 : Number(outMaxRaw);
-                          
+                         
                           handleAddAction({
                             type: "NUMBER_SCALE",
                             description: `Scale '${name}' to [${outMin}, ${outMax}]`,
@@ -1224,7 +1224,8 @@ const DataCleaning: React.FC = () => {
 
                     const displayValue = (v: any) => {
                       if (v === null || v === undefined) return <span className="text-gray-500 italic">null</span>;
-                      if (v instanceof Date) return v.toLocaleString('en-IN');
+                      // MODIFIED LINE: Use toLocaleDateString to show only the date
+                      if (v instanceof Date) return v.toLocaleDateString('en-IN');
                       if (typeof v === 'boolean') return v ? 'true' : 'false';
                       return String(v);
                     };
