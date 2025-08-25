@@ -1,101 +1,60 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { motion } from "framer-motion";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  LineChart,
-  Line,
-  ScatterChart,
-  Scatter,
-  PieChart,
-  Pie,
-  Cell,
-  Legend,
-} from "recharts";
+  ActivitySquare,
+  BarChart3,
+  Binary,
+  Brain,
+  CheckCircle2,
+  ChevronDown,
+  Database,
+  FileSearch,
+  Layers,
+  ListChecks,
+  ListOrdered,
+  ListTree,
+  PieChart as PieChartIcon,
+  ScanSearch,
+  Sigma,
+  SigmaSquare,
+  Table as TableIcon,
+  TrendingUp,
+  TriangleAlert,
+} from "lucide-react";
 import { useDataContext } from "../context/DataContext";
 
 /**
  * ======================================================================================
- * Analytics.tsx
+ * AnalyticsTextReport.tsx
  * --------------------------------------------------------------------------------------
- * Single-file, fully expanded, robust analytics component that renders:
- *  - Summary Statistics (dynamic, data-driven)
- *  - Distribution Analysis (selectable numeric column, multi-colored bars)
- *  - Trend Analysis (selectable numeric column, line chart)
- *  - Correlation Analysis (pairwise Pearson, selectable X/Y)
- *  - Anomalies (z-score > threshold, highlighted in bar chart)
- *  - Missingness & Cardinality (per column overview)
+ * Purely text/table analytics report (NO visual charts) with an animated, modern UI.
  *
- * The component is defensive:
- *  - Works if context exposes either `dataset` { columns, data } or plain `data` (array)
- *  - Avoids crashing on undefined/null using guards and defaults
- *  - Shows friendly messages when data is insufficient
+ * What you get:
+ *  - Data Health: missingness, duplicates, low variance, high cardinality, mixed types, possible primary key
+ *  - Descriptive Stats:
+ *      • Numeric: count, mean, median, mode, std, variance, min, max, range, skewness, kurtosis
+ *      • Categorical: unique count, most/least frequent categories, entropy
+ *      • Datetime: min/max, span, most common month/weekday
+ *  - Relationships:
+ *      • Numeric-numeric Pearson correlations (top | bottom)
+ *      • Categorical-categorical chi-square (stat, df) summary (optional light)
+ *  - Outliers/Anomalies:
+ *      • Z-score and IQR outlier counts per numeric column
+ *  - Plain-language Insights synthesized from the above
  *
- * Styling:
- *  - Tailwind utility classes (no external UI libs)
- *  - Dark theme containers
+ * Defensive coding across undefined contexts and mixed input shapes.
  *
- * Recharts:
- *  - Bar/Line/Scatter/Pie charts
- *  - Multi-colored bars via <Cell>
- *
- * No extra files created. Everything lives here.
+ * Styling: Tailwind CSS. Animations: framer-motion. Icons: lucide-react.
  * ======================================================================================
  */
 
-/* ======================================================================================
- * Color Palettes
- * ====================================================================================== */
-const COLORS_PRIMARY = [
-  "#00BFA6",
-  "#FFC107",
-  "#66BB6A",
-  "#FF7043",
-  "#42A5F5",
-  "#AB47BC",
-  "#26C6DA",
-  "#EC407A",
-  "#8D6E63",
-  "#7E57C2",
-  "#26A69A",
-  "#5C6BC0",
-  "#9CCC65",
-  "#FFCA28",
-  "#EF5350",
-];
-
-const COLORS_SEQUENTIAL = [
-  "#003f5c",
-  "#2f4b7c",
-  "#665191",
-  "#a05195",
-  "#d45087",
-  "#f95d6a",
-  "#ff7c43",
-  "#ffa600",
-];
-
-/* ======================================================================================
- * Types & Safe Accessors
- * ====================================================================================== */
+/** ---------------------------------- Types ---------------------------------------- */
 type DataRow = Record<string, any>;
 
 type DatasetShape = {
   columns?: Array<{
     name: string;
-    type?: string; // "numeric" | "categorical" | etc.
-    mean?: number;
-    median?: number;
-    std?: number;
-    min?: number;
-    max?: number;
-    missingCount?: number;
-    uniqueCount?: number;
+    type?: string;
   }>;
   data?: DataRow[];
 };
@@ -104,1045 +63,929 @@ type ContextShape =
   | {
       dataset?: DatasetShape | null;
       data?: DataRow[] | null;
+      updateCounter?: number;
     }
   | any;
 
-const isFiniteNumber = (v: any) =>
-  typeof v === "number" && Number.isFinite(v);
-
-/* ======================================================================================
- * Utility (Pure) Functions
- * ====================================================================================== */
-
-/** Safe array length */
-const len = (arr: any[] | undefined | null) => (Array.isArray(arr) ? arr.length : 0);
-
-/** Safe mean */
-const mean = (arr: number[]) => {
-  if (!arr || arr.length === 0) return 0;
-  let s = 0;
-  for (let i = 0; i < arr.length; i++) s += arr[i];
-  return s / arr.length;
+/** ------------------------------ Small Utilities --------------------------------- */
+const isFiniteNumber = (v: any) => typeof v === "number" && Number.isFinite(v);
+const isMissing = (v: any) => v === null || v === undefined || (typeof v === "number" && Number.isNaN(v)) || v === "";
+const clamp = (x: number, a: number, b: number) => Math.min(Math.max(x, a), b);
+const fmt = (x: any, digits = 3) => (typeof x === "number" && Number.isFinite(x) ? x.toFixed(digits) : "—");
+const tryDate = (v: any) => {
+  // Accept JS Date, ISO strings, or parseable strings/numbers
+  if (v instanceof Date && !isNaN(v.getTime())) return v;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
 };
 
-/** Safe median */
-const median = (arr: number[]) => {
-  if (!arr || arr.length === 0) return 0;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const n = sorted.length;
-  const m = Math.floor(n / 2);
-  return n % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2;
+/** --------------------------- Basic Stats (Robust) -------------------------------- */
+const sum = (a: number[]) => a.reduce((s, x) => s + x, 0);
+const mean = (a: number[]) => (a.length ? sum(a) / a.length : 0);
+const variance = (a: number[]) => {
+  if (a.length < 2) return 0;
+  const m = mean(a);
+  return sum(a.map((x) => (x - m) ** 2)) / (a.length - 1);
 };
-
-/** Safe sample standard deviation */
-const stdDev = (arr: number[]) => {
-  if (!arr || arr.length < 2) return 0;
-  const m = mean(arr);
-  const varSum = arr.reduce((acc, x) => acc + (x - m) * (x - m), 0);
-  return Math.sqrt(varSum / (arr.length - 1));
+const stdDev = (a: number[]) => Math.sqrt(variance(a));
+const median = (a: number[]) => {
+  if (!a.length) return 0;
+  const s = [...a].sort((x, y) => x - y);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
-
-/** Min/Max with guards */
-const minMax = (arr: number[]) => {
-  if (!arr || arr.length === 0) return { min: 0, max: 0 };
-  let mn = arr[0];
-  let mx = arr[0];
-  for (let i = 1; i < arr.length; i++) {
-    if (arr[i] < mn) mn = arr[i];
-    if (arr[i] > mx) mx = arr[i];
+const mode = (a: (string | number)[]) => {
+  if (!a.length) return null;
+  const map = new Map<any, number>();
+  for (const v of a) map.set(v, (map.get(v) || 0) + 1);
+  let best: any = null,
+    bestC = -1;
+  for (const [k, c] of map) if (c > bestC) (best = k), (bestC = c);
+  return best;
+};
+const minMax = (a: number[]) => {
+  if (!a.length) return { min: 0, max: 0 };
+  let mn = a[0],
+    mx = a[0];
+  for (let i = 1; i < a.length; i++) {
+    if (a[i] < mn) mn = a[i];
+    if (a[i] > mx) mx = a[i];
   }
   return { min: mn, max: mx };
 };
+// Unbiased (Fisher) sample skewness and excess kurtosis approximations
+const skewness = (a: number[]) => {
+  const n = a.length;
+  if (n < 3) return 0;
+  const m = mean(a);
+  const s = stdDev(a);
+  if (!s) return 0;
+  const m3 = sum(a.map((x) => (x - m) ** 3)) / n;
+  return (Math.sqrt(n * (n - 1)) / (n - 2)) * (m3 / s ** 3);
+};
+const kurtosisExcess = (a: number[]) => {
+  const n = a.length;
+  if (n < 4) return 0;
+  const m = mean(a);
+  const s2 = variance(a);
+  if (!s2) return 0;
+  const s = Math.sqrt(s2);
+  const m4 = sum(a.map((x) => (x - m) ** 4)) / n;
+  // excess kurtosis (kurtosis - 3)
+  const g2 = m4 / s ** 4 - 3;
+  // Small sample correction (Fisher)
+  const term1 = ((n - 1) / ((n - 2) * (n - 3))) * ((n + 1) * g2 + 6);
+  return term1;
+};
 
-/** Pearson correlation for same-length numeric arrays */
+/** --------------------------- Relationships & Tests ------------------------------- */
 const pearson = (x: number[], y: number[]) => {
-  if (!x || !y) return 0;
   const n = Math.min(x.length, y.length);
   if (n < 2) return 0;
-  let sumX = 0,
-    sumY = 0,
-    sumXX = 0,
-    sumYY = 0,
-    sumXY = 0;
+  let sx = 0,
+    sy = 0,
+    sxx = 0,
+    syy = 0,
+    sxy = 0;
   for (let i = 0; i < n; i++) {
     const xi = x[i];
     const yi = y[i];
     if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) continue;
-    sumX += xi;
-    sumY += yi;
-    sumXX += xi * xi;
-    sumYY += yi * yi;
-    sumXY += xi * yi;
+    sx += xi;
+    sy += yi;
+    sxx += xi * xi;
+    syy += yi * yi;
+    sxy += xi * yi;
   }
-  const num = n * sumXY - sumX * sumY;
-  const den = Math.sqrt((n * sumXX - sumX * sumX) * (n * sumYY - sumY * sumY));
-  if (!isFiniteNumber(num) || !isFiniteNumber(den) || den === 0) return 0;
-  return num / den;
+  const num = n * sxy - sx * sy;
+  const den = Math.sqrt((n * sxx - sx * sx) * (n * syy - sy * sy));
+  return den ? num / den : 0;
 };
 
-/** Z-Score anomalies (returns indices of outliers) */
-const zScoreAnomalies = (arr: number[], threshold = 2.5) => {
-  const m = mean(arr);
-  const s = stdDev(arr);
-  if (s === 0) return [];
-  const idxs: number[] = [];
-  for (let i = 0; i < arr.length; i++) {
-    const z = (arr[i] - m) / s;
-    if (Math.abs(z) > threshold) idxs.push(i);
-  }
-  return idxs;
-};
-
-/** Count missing (null/undefined/NaN/empty string) */
-const isMissing = (v: any) =>
-  v === null || v === undefined || (typeof v === "number" && Number.isNaN(v)) || v === "";
-
-/** Unique count for a column */
-const uniqueCount = (values: any[]) => {
-  const set = new Set(values.map((v) => (typeof v === "number" && Number.isNaN(v) ? "__NaN__" : v)));
-  return set.size;
-};
-
-/* ======================================================================================
- * Data Normalization Helpers
- * ====================================================================================== */
-
-/** Extract raw rows from context that may have dataset or data */
-const useRowsAndColumns = (ctx: ContextShape) => {
-  const dataset: DatasetShape | null | undefined = ctx?.dataset ?? null;
-  const plainData: DataRow[] | null | undefined = ctx?.data ?? null;
-
-  const rows: DataRow[] = useMemo(() => {
-    if (dataset && Array.isArray(dataset.data)) return dataset.data as DataRow[];
-    if (Array.isArray(plainData)) return plainData as DataRow[];
-    return [];
-  }, [dataset, plainData]);
-
-  // Build columns from dataset.columns if available; else infer from first row
-  const columns = useMemo(() => {
-    if (dataset?.columns && Array.isArray(dataset.columns) && dataset.columns.length > 0) {
-      return dataset.columns.map((c) => c.name);
-    }
-    if (rows.length > 0) {
-      return Object.keys(rows[0]);
-    }
-    return [];
-  }, [dataset, rows]);
-
-  // Types inference if types are not given
-  const numericColumns = useMemo(() => {
-    if (dataset?.columns && dataset.columns.length > 0) {
-      const numerics = dataset.columns
-        .filter((c) => c.type === "numeric" || c.type === "number")
-        .map((c) => c.name);
-      if (numerics.length > 0) return numerics;
-    }
-    // Otherwise infer: numeric if value in first non-missing row parses to finite number
-    const ncs: string[] = [];
-    for (const col of columns) {
-      let found = false;
-      for (let i = 0; i < rows.length; i++) {
-        const v = rows[i]?.[col];
-        if (!isMissing(v)) {
-          const num = Number(v);
-          if (Number.isFinite(num)) ncs.push(col);
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        // no non-missing values found; ignore as numeric
-      }
-    }
-    return ncs;
-  }, [dataset, rows, columns]);
-
-  const categoricalColumns = useMemo(() => {
-    // from dataset metadata if present
-    if (dataset?.columns && dataset.columns.length > 0) {
-      const cats = dataset.columns
-        .filter((c) => c.type === "categorical" || c.type === "string" || c.type === "enum")
-        .map((c) => c.name);
-      if (cats.length > 0) return cats;
-    }
-    // infer: non-numeric columns become categorical
-    const set = new Set(columns);
-    for (const numCol of numericColumns) set.delete(numCol);
-    return Array.from(set);
-  }, [dataset, columns, numericColumns]);
-
-  return { rows, columns, numericColumns, categoricalColumns, dataset };
-};
-
-/* ======================================================================================
- * Derived Data Builders
- * ====================================================================================== */
-
-/** Build summary of dataset: counts, per-column stats */
-const useSummary = (rows: DataRow[], columns: string[], numericColumns: string[]) => {
-  return useMemo(() => {
-    const totalRows = len(rows);
-    const totalCols = len(columns);
-
-    // Per-column stats
-    const columnSummaries = columns.map((col) => {
-      const values = rows.map((r) => r?.[col]);
-      const missing = values.filter(isMissing).length;
-      const nonMissingValues = values.filter((v) => !isMissing(v));
-      const uCount = uniqueCount(nonMissingValues);
-
-      let numericStats: null | {
-        mean: number;
-        median: number;
-        std: number;
-        min: number;
-        max: number;
-      } = null;
-
-      if (numericColumns.includes(col)) {
-        const nums = nonMissingValues.map((v) => Number(v)).filter((n) => Number.isFinite(n));
-        const m = mean(nums);
-        const med = median(nums);
-        const sd = stdDev(nums);
-        const { min, max } = minMax(nums);
-        numericStats = { mean: m, median: med, std: sd, min, max };
-      }
-
-      return {
-        column: col,
-        missing,
-        unique: uCount,
-        numericStats,
-      };
-    });
-
-    // Range of means across numeric columns
-    const numericMeans = columnSummaries
-      .filter((c) => !!c.numericStats)
-      .map((c) => c.numericStats!.mean);
-
-    const minMean = numericMeans.length ? Math.min(...numericMeans) : 0;
-    const maxMean = numericMeans.length ? Math.max(...numericMeans) : 0;
-    const avgNumericMean = numericMeans.length ? mean(numericMeans) : 0;
-
-    return {
-      totalRows,
-      totalCols,
-      columnSummaries,
-      minMean,
-      maxMean,
-      avgNumericMean,
-    };
-  }, [rows, columns, numericColumns]);
-};
-
-/** Build distribution bins for a selected numeric column */
-const buildHistogram = (values: number[], desiredBins = 20) => {
-  const clean = values.filter((v) => Number.isFinite(v));
-  if (clean.length === 0) return [];
-  const { min, max } = minMax(clean);
-  if (min === max) {
-    // all same values -> single bin
-    return [
-      {
-        bin: `${min.toFixed(2)}-${max.toFixed(2)}`,
-        start: min,
-        end: max,
-        count: clean.length,
-      },
-    ];
-  }
-  const binCount = Math.max(1, Math.min(desiredBins, Math.ceil(Math.sqrt(clean.length))));
-  const binSize = (max - min) / binCount;
-  const bins: { bin: string; start: number; end: number; count: number }[] = [];
-  for (let i = 0; i < binCount; i++) {
-    const start = min + i * binSize;
-    const end = i === binCount - 1 ? max : start + binSize;
-    bins.push({
-      bin: `${start.toFixed(2)}-${end.toFixed(2)}`,
-      start,
-      end,
-      count: 0,
-    });
-  }
-  for (let i = 0; i < clean.length; i++) {
-    const v = clean[i];
-    let idx = Math.floor(((v - min) / (max - min)) * binCount);
-    if (idx === binCount) idx = binCount - 1; // edge case max
-    bins[idx].count += 1;
-  }
-  return bins;
-};
-
-/** Build trend series for selected numeric column (index on x) */
-const buildTrendSeries = (rows: DataRow[], col: string) => {
-  if (!rows || rows.length === 0 || !col) return [];
-  const data = rows
-    .map((r, i) => ({ index: i + 1, value: Number(r?.[col]) }))
-    .filter((d) => Number.isFinite(d.value));
-  return data;
-};
-
-/** Build pairwise correlation matrix (flattened) for numeric columns */
-const buildCorrelations = (rows: DataRow[], numericCols: string[]) => {
-  const out: { pair: string; colX: string; colY: string; corr: number }[] = [];
-  if (!rows || rows.length === 0 || !numericCols || numericCols.length < 2) return out;
-
-  const colToArray: Record<string, number[]> = {};
-  for (const col of numericCols) {
-    colToArray[col] = rows
-      .map((r) => Number(r?.[col]))
-      .map((v) => (Number.isFinite(v) ? v : NaN))
-      .filter((x) => Number.isFinite(x));
-  }
-
-  for (let i = 0; i < numericCols.length; i++) {
-    for (let j = i + 1; j < numericCols.length; j++) {
-      const colX = numericCols[i];
-      const colY = numericCols[j];
-      // To align lengths, sample to the shorter length
-      const n = Math.min(colToArray[colX].length, colToArray[colY].length);
-      if (n < 2) continue;
-      const xs = colToArray[colX].slice(0, n);
-      const ys = colToArray[colY].slice(0, n);
-      const corr = pearson(xs, ys);
-      out.push({
-        pair: `${colX} vs ${colY}`,
-        colX,
-        colY,
-        corr,
-      });
+// Simple chi-square statistic for cat-cat association (no exact p-value here)
+const chiSquareStat = (table: number[][]) => {
+  const r = table.length;
+  const c = table[0]?.length || 0;
+  if (!r || !c) return { chi2: 0, df: 0 };
+  const rowSums = table.map((row) => row.reduce((a, b) => a + b, 0));
+  const colSums: number[] = Array(c).fill(0);
+  for (let j = 0; j < c; j++) for (let i = 0; i < r; i++) colSums[j] += table[i][j];
+  const total = rowSums.reduce((a, b) => a + b, 0) || 1;
+  let chi2 = 0;
+  for (let i = 0; i < r; i++) {
+    for (let j = 0; j < c; j++) {
+      const expected = (rowSums[i] * colSums[j]) / total;
+      if (expected > 0) chi2 += ((table[i][j] - expected) ** 2) / expected;
     }
   }
-  // sort by absolute correlation desc
-  out.sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
-  return out;
+  const df = (r - 1) * (c - 1);
+  return { chi2, df };
 };
 
-/** Build anomalies based on z-scores for a selected numeric column */
-const buildAnomalies = (rows: DataRow[], col: string, threshold = 2.5) => {
-  if (!rows || rows.length === 0 || !col) return { anomalies: [] as number[], series: [] as number[] };
-  const series = rows.map((r) => Number(r?.[col])).filter((v) => Number.isFinite(v));
-  const anomalies = zScoreAnomalies(series, threshold);
-  return { anomalies, series };
+/** ------------------------------- Outlier Logic ----------------------------------- */
+const zScoreOutliers = (a: number[], threshold = 3) => {
+  const m = mean(a);
+  const s = stdDev(a);
+  if (!s) return { count: 0, idx: [] as number[] };
+  const idx: number[] = [];
+  for (let i = 0; i < a.length; i++) {
+    const z = (a[i] - m) / s;
+    if (Math.abs(z) > threshold) idx.push(i);
+  }
+  return { count: idx.length, idx };
+};
+const iqrOutliers = (a: number[]) => {
+  if (!a.length) return { count: 0, idx: [] as number[], fences: [0, 0] as [number, number] };
+  const s = [...a].sort((x, y) => x - y);
+  const q1 = s[Math.floor((s.length * 1) / 4)];
+  const q3 = s[Math.floor((s.length * 3) / 4)];
+  const iqr = q3 - q1;
+  const lo = q1 - 1.5 * iqr;
+  const hi = q3 + 1.5 * iqr;
+  const idx: number[] = [];
+  s.forEach((v, i) => {
+    if (v < lo || v > hi) idx.push(i);
+  });
+  return { count: idx.length, idx, fences: [lo, hi] as [number, number] };
 };
 
-/** Build categorical counts for a selected categorical column */
-const buildCategoryCounts = (rows: DataRow[], col: string, topN = 15) => {
-  if (!rows || rows.length === 0 || !col) return [];
+/** ---------------------------- Entropy (Categorical) ------------------------------ */
+const entropy = (values: any[]) => {
   const counts = new Map<any, number>();
-  for (let i = 0; i < rows.length; i++) {
-    const v = rows[i]?.[col];
-    const key = isMissing(v) ? "__MISSING__" : String(v);
+  let n = 0;
+  for (const v of values) {
+    if (isMissing(v)) continue;
+    n += 1;
+    const key = String(v);
     counts.set(key, (counts.get(key) || 0) + 1);
   }
-  const arr = Array.from(counts, ([name, count]) => ({ name, value: count }));
-  arr.sort((a, b) => b.value - a.value);
-  return arr.slice(0, topN);
+  if (n === 0) return 0;
+  let H = 0;
+  for (const [, c] of counts) {
+    const p = c / n;
+    H += -p * Math.log2(p);
+  }
+  return H; // bits
 };
 
-/** Build missingness per column */
-const buildMissingness = (rows: DataRow[], columns: string[]) => {
-  if (!rows || !columns || columns.length === 0) return [];
-  const total = rows.length || 1;
-  return columns.map((col) => {
-    const miss = rows.map((r) => r?.[col]).filter(isMissing).length;
-    const pct = (miss / total) * 100;
-    return { column: col, missing: miss, percent: pct };
-  });
-};
+/** ----------------------------- Inference & Shaping ------------------------------- */
+const useRowsAndColumns = (ctx: ContextShape) => {
+  const dataset: DatasetShape | null | undefined = ctx?.dataset ?? null;
+  const plain: DataRow[] | null | undefined = ctx?.data ?? null;
 
-/** Build cardinality per column */
-const buildCardinality = (rows: DataRow[], columns: string[]) => {
-  if (!rows || !columns || columns.length === 0) return [];
-  return columns.map((col) => {
-    const vals = rows.map((r) => r?.[col]).filter((v) => !isMissing(v));
-    const u = uniqueCount(vals);
-    return { column: col, unique: u };
-  });
-};
+  const rows: DataRow[] = useMemo(() => {
+    if (dataset?.data && Array.isArray(dataset.data)) return dataset.data as DataRow[];
+    if (Array.isArray(plain)) return plain as DataRow[];
+    return [];
+  }, [dataset?.data, plain]);
 
-/* ======================================================================================
- * Insight Generators (Text, data-driven, not pre-recorded)
- * ====================================================================================== */
+  const columns = useMemo(() => {
+    if (dataset?.columns?.length) return dataset.columns.map((c) => c.name);
+    if (rows.length) return Object.keys(rows[0]);
+    return [];
+  }, [dataset?.columns, rows]);
 
-const summaryInsight = (summary: ReturnType<typeof useSummary>) => {
-  if (!summary) return "No summary available.";
-  const { totalRows, totalCols, minMean, maxMean, avgNumericMean, columnSummaries } = summary;
-  const hasNumeric = columnSummaries.some((c) => !!c.numericStats);
-
-  const numPart = hasNumeric
-    ? ` Numeric columns show mean values in the range ${minMean.toFixed(2)}–${maxMean.toFixed(
-        2
-      )} (overall avg ≈ ${avgNumericMean.toFixed(2)}).`
-    : " No numeric columns detected.";
-
-  const highMissing = columnSummaries
-    .map((c) => {
-      const total = summary.totalRows || 1;
-      const pct = (c.missing / total) * 100;
-      return { col: c.column, pct };
-    })
-    .filter((x) => x.pct > 20)
-    .slice(0, 3);
-
-  const missPart =
-    highMissing.length > 0
-      ? ` Columns with higher missingness (>20%): ${highMissing
-          .map((x) => `${x.col} (${x.pct.toFixed(1)}%)`)
-          .join(", ")}.`
-      : "";
-
-  return `Dataset has ${totalRows} rows and ${totalCols} columns.${numPart}${missPart}`;
-};
-
-const distributionInsight = (col: string, bins: ReturnType<typeof buildHistogram>) => {
-  if (!col) return "Select a numeric column to analyze its distribution.";
-  if (!bins || bins.length === 0) return `No numeric values available for "${col}".`;
-  const total = bins.reduce((acc, b) => acc + b.count, 0);
-  const maxBin = bins.reduce((a, b) => (a.count > b.count ? a : b), bins[0]);
-  return `Distribution for "${col}" has ${bins.length} bins over ${total} values. The most populated bin is ${maxBin.bin} with ${maxBin.count} records.`;
-};
-
-const trendInsight = (col: string, series: { index: number; value: number }[]) => {
-  if (!col) return "Select a numeric column to analyze trends.";
-  if (!series || series.length < 2) return `Not enough data points to assess a trend for "${col}".`;
-  const first = series[0]?.value ?? 0;
-  const last = series[series.length - 1]?.value ?? 0;
-  const changePct = first === 0 ? 0 : ((last - first) / Math.abs(first)) * 100;
-  const direction = last > first ? "upward" : last < first ? "downward" : "flat";
-  return `Trend for "${col}" appears ${direction}. Change ≈ ${changePct.toFixed(2)}% from first to last observed point.`;
-};
-
-const correlationInsight = (pairs: { pair: string; corr: number }[]) => {
-  if (!pairs || pairs.length === 0) return "Not enough numeric columns to compute correlation.";
-  const top = pairs.slice(0, 3);
-  const text = top
-    .map((p) => `${p.pair} (${p.corr >= 0 ? "+" : ""}${p.corr.toFixed(2)})`)
-    .join(", ");
-  return `Top correlations: ${text}.`;
-};
-
-const anomalyInsight = (col: string, anomalies: number[], total: number) => {
-  if (!col) return "Select a numeric column to detect anomalies.";
-  if (!anomalies) return `No anomaly information available for "${col}".`;
-  if (total === 0) return `No values available to detect anomalies in "${col}".`;
-  if (anomalies.length === 0) return `No significant anomalies detected for "${col}".`;
-  const pct = (anomalies.length / total) * 100;
-  return `Detected ${anomalies.length} anomalies in "${col}" (~${pct.toFixed(
-    2
-  )}% of points) using z-scores.`;
-};
-
-const missingnessInsight = (miss: { column: string; missing: number; percent: number }[]) => {
-  if (!miss || miss.length === 0) return "No missingness information available.";
-  const top = [...miss].sort((a, b) => b.percent - a.percent).slice(0, 3);
-  const text = top.map((m) => `${m.column} (${m.percent.toFixed(1)}%)`).join(", ");
-  return `Highest missingness: ${text}.`;
-};
-
-const cardinalityInsight = (cards: { column: string; unique: number }[]) => {
-  if (!cards || cards.length === 0) return "No cardinality information available.";
-  const top = [...cards].sort((a, b) => b.unique - a.unique).slice(0, 3);
-  const text = top.map((c) => `${c.column} (${c.unique})`).join(", ");
-  return `Columns with highest unique values: ${text}.`;
-};
-
-/* ======================================================================================
- * Main Component
- * ====================================================================================== */
-
-const Analytics: React.FC = () => {
-  const context = useDataContext() as ContextShape;
-  
-  // Debug: Log when component renders
-  console.log("Analytics component rendered:", { 
-    hasDataset: !!context.dataset, 
-    dataLength: context.dataset?.data?.length,
-    updateCounter: context.updateCounter 
-  });
-  
-  // Force re-render when update counter changes
-  useEffect(() => {
-    console.log("Analytics: Update counter changed to:", context.updateCounter);
-  }, [context.updateCounter]);
-  
-  // Force re-render when dataset data changes
-  useEffect(() => {
-    console.log("Analytics: Dataset data length changed to:", context.dataset?.data?.length);
-  }, [context.dataset?.data?.length]);
-
-  // Normalize rows/columns/types
-  const { rows, columns, numericColumns, categoricalColumns } = useRowsAndColumns(context);
-
-  // UI State
-  const [selectedNumeric, setSelectedNumeric] = useState<string>("");
-  const [selectedNumericTrend, setSelectedNumericTrend] = useState<string>("");
-  const [selectedNumericAnomaly, setSelectedNumericAnomaly] = useState<string>("");
-  const [selectedCat, setSelectedCat] = useState<string>("");
-
-  // Initialize defaults when columns change
-  useEffect(() => {
-    if (numericColumns.length > 0) {
-      if (!selectedNumeric) setSelectedNumeric(numericColumns[0]);
-      if (!selectedNumericTrend) setSelectedNumericTrend(numericColumns[0]);
-      if (!selectedNumericAnomaly) setSelectedNumericAnomaly(numericColumns[0]);
-    } else {
-      setSelectedNumeric("");
-      setSelectedNumericTrend("");
-      setSelectedNumericAnomaly("");
+  // infer types: numeric, categorical, datetime
+  const { numericCols, categoricalCols, datetimeCols } = useMemo(() => {
+    const num: string[] = [];
+    const cat: string[] = [];
+    const dt: string[] = [];
+    for (const col of columns) {
+      // scan first 50 non-missing values to infer
+      let sawNum = false,
+        sawStr = false,
+        sawDate = false;
+      let checked = 0;
+      for (let i = 0; i < rows.length && checked < 50; i++) {
+        const v = rows[i]?.[col];
+        if (isMissing(v)) continue;
+        checked++;
+        const n = Number(v);
+        if (Number.isFinite(n) && typeof v !== "boolean") sawNum = true;
+        if (typeof v === "string") {
+          sawStr = true;
+          if (tryDate(v)) sawDate = true;
+        }
+        if (v instanceof Date) sawDate = true;
+      }
+      if (sawDate) dt.push(col);
+      else if (sawNum) num.push(col);
+      else cat.push(col);
     }
-  }, [numericColumns, selectedNumeric, selectedNumericTrend, selectedNumericAnomaly]);
+    return { numericCols: num, categoricalCols: cat, datetimeCols: dt };
+  }, [columns, rows]);
 
-  useEffect(() => {
-    if (categoricalColumns.length > 0) {
-      if (!selectedCat) setSelectedCat(categoricalColumns[0]);
-    } else {
-      setSelectedCat("");
+  return { rows, columns, numericCols, categoricalCols, datetimeCols };
+};
+
+/** --------------------------- Duplicate & Mixed Type Checks ----------------------- */
+const countDuplicates = (rows: DataRow[]) => {
+  const seen = new Set<string>();
+  let dups = 0;
+  for (const r of rows) {
+    const key = JSON.stringify(r, Object.keys(r).sort());
+    if (seen.has(key)) dups++;
+    else seen.add(key);
+  }
+  return dups;
+};
+const mixedTypesByColumn = (rows: DataRow[], columns: string[]) => {
+  return columns.map((col) => {
+    const types = new Set<string>();
+    for (let i = 0; i < rows.length && types.size <= 3; i++) {
+      const v = rows[i]?.[col];
+      if (isMissing(v)) continue;
+      types.add(Array.isArray(v) ? "array" : typeof v);
     }
-  }, [categoricalColumns, selectedCat]);
+    return { column: col, types: Array.from(types).sort() };
+  });
+};
 
-  // Derived data
-  const summary = useSummary(rows, columns, numericColumns);
-
-  const distBins = useMemo(() => {
-    if (!selectedNumeric) return [];
-    const vals = rows.map((r) => Number(r?.[selectedNumeric])).filter((n) => Number.isFinite(n));
-    return buildHistogram(vals, 24);
-  }, [rows, selectedNumeric]);
-
-  const trendSeries = useMemo(() => {
-    if (!selectedNumericTrend) return [];
-    return buildTrendSeries(rows, selectedNumericTrend);
-  }, [rows, selectedNumericTrend]);
-
-  const correlations = useMemo(() => buildCorrelations(rows, numericColumns), [rows, numericColumns]);
-
-  const { anomalies: anomalyIdxs, series: anomalySeries } = useMemo(
-    () => buildAnomalies(rows, selectedNumericAnomaly, 2.5),
-    [rows, selectedNumericAnomaly]
-  );
-
-  const catCounts = useMemo(() => {
-    if (!selectedCat) return [];
-    return buildCategoryCounts(rows, selectedCat, 20);
-  }, [rows, selectedCat]);
-
-  const missingness = useMemo(() => buildMissingness(rows, columns), [rows, columns]);
-  const cardinality = useMemo(() => buildCardinality(rows, columns), [rows, columns]);
-
-  // Insight texts
-  const summaryText = useMemo(() => summaryInsight(summary), [summary]);
-  const distText = useMemo(() => distributionInsight(selectedNumeric, distBins), [selectedNumeric, distBins]);
-  const trendText = useMemo(() => trendInsight(selectedNumericTrend, trendSeries), [selectedNumericTrend, trendSeries]);
-  const corrText = useMemo(() => correlationInsight(correlations), [correlations]);
-  const anomalyText = useMemo(
-    () => anomalyInsight(selectedNumericAnomaly, anomalyIdxs, anomalySeries.length),
-    [selectedNumericAnomaly, anomalyIdxs, anomalySeries.length]
-  );
-  const missingText = useMemo(() => missingnessInsight(missingness), [missingness]);
-  const cardinalityText = useMemo(() => cardinalityInsight(cardinality), [cardinality]);
-
-  // Helpers for chart color
-  const cellColor = useCallback((i: number) => COLORS_PRIMARY[i % COLORS_PRIMARY.length], []);
-  const isAnomalyIndex = useCallback((i: number) => anomalyIdxs.includes(i), [anomalyIdxs]);
-
-  /* ===============================================================================
-   * Renderers
-   * =============================================================================== */
-
-  // Header with counts and selectors
-  const Header = () => {
-    return (
-      <div className="bg-[#111318] border border-gray-800 rounded-2xl p-5 mb-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-100">Advanced Analytics</h2>
-            <p className="text-gray-400 text-sm">
-              Fully data-driven insights based on your uploaded dataset. No pre-recorded content.
-            </p>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-[#0C0F14] border border-gray-800 rounded-xl p-4">
-              <div className="text-xs text-gray-400">Rows</div>
-              <div className="text-xl text-gray-100">{len(rows)}</div>
-            </div>
-            <div className="bg-[#0C0F14] border border-gray-800 rounded-xl p-4">
-              <div className="text-xs text-gray-400">Columns</div>
-              <div className="text-xl text-gray-100">{len(columns)}</div>
-            </div>
-            <div className="bg-[#0C0F14] border border-gray-800 rounded-xl p-4">
-              <div className="text-xs text-gray-400">Numeric</div>
-              <div className="text-xl text-gray-100">{len(numericColumns)}</div>
-            </div>
-            <div className="bg-[#0C0F14] border border-gray-800 rounded-xl p-4">
-              <div className="text-xs text-gray-400">Categorical</div>
-              <div className="text-xl text-gray-100">{len(categoricalColumns)}</div>
-            </div>
+/** --------------------------- Section UI Helpers ---------------------------------- */
+const Section: React.FC<{
+  icon?: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}> = ({ icon, title, subtitle, children, defaultOpen = true }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-[#0c0f14] border border-gray-800 rounded-2xl overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between gap-3 p-4 hover:bg-gray-900/50 transition"
+      >
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-xl bg-gray-900 border border-gray-800">{icon}</div>
+          <div className="text-left">
+            <div className="text-base md:text-lg font-semibold text-gray-100">{title}</div>
+            {subtitle ? <div className="text-xs md:text-sm text-gray-400">{subtitle}</div> : null}
           </div>
         </div>
-
-        {/* Selectors */}
-        <div className="mt-5 grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-400 mb-1">Distribution (numeric)</label>
-            <select
-              className="bg-[#0B0E13] border border-gray-800 rounded-lg text-gray-200 p-2 focus:outline-none"
-              value={selectedNumeric}
-              onChange={(e) => setSelectedNumeric(e.target.value)}
-            >
-              {numericColumns.length === 0 && <option value="">No numeric columns</option>}
-              {numericColumns.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-400 mb-1">Trend (numeric)</label>
-            <select
-              className="bg-[#0B0E13] border border-gray-800 rounded-lg text-gray-200 p-2 focus:outline-none"
-              value={selectedNumericTrend}
-              onChange={(e) => setSelectedNumericTrend(e.target.value)}
-            >
-              {numericColumns.length === 0 && <option value="">No numeric columns</option>}
-              {numericColumns.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-400 mb-1">Anomalies (numeric)</label>
-            <select
-              className="bg-[#0B0E13] border border-gray-800 rounded-lg text-gray-200 p-2 focus:outline-none"
-              value={selectedNumericAnomaly}
-              onChange={(e) => setSelectedNumericAnomaly(e.target.value)}
-            >
-              {numericColumns.length === 0 && <option value="">No numeric columns</option>}
-              {numericColumns.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-400 mb-1">Categorical (counts)</label>
-            <select
-              className="bg-[#0B0E13] border border-gray-800 rounded-lg text-gray-200 p-2 focus:outline-none"
-              value={selectedCat}
-              onChange={(e) => setSelectedCat(e.target.value)}
-            >
-              {categoricalColumns.length === 0 && <option value="">No categorical columns</option>}
-              {categoricalColumns.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // Section Container
-  const Section: React.FC<{ title: string; subtitle?: string; children: React.ReactNode }> = ({
-    title,
-    subtitle,
-    children,
-  }) => (
-    <div className="bg-[#111318] border border-gray-800 rounded-2xl p-5">
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold text-gray-100">{title}</h3>
-        {subtitle ? <p className="text-sm text-gray-400">{subtitle}</p> : null}
-      </div>
-      <div>{children}</div>
+        <motion.div animate={{ rotate: open ? 180 : 0 }}>
+          <ChevronDown className="w-5 h-5 text-gray-400" />
+        </motion.div>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25 }}
+            className="px-4 pb-4"
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
+};
 
-  // Chart wrappers with friendly fallbacks
-  const DistributionSection = () => {
-    const chartData =
-      distBins?.map((b, i) => ({
-        name: b.bin,
-        count: b.count,
-        idx: i,
-      })) ?? [];
+const StatCard: React.FC<{ label: string; value: React.ReactNode; hint?: string }> = ({ label, value, hint }) => (
+  <motion.div
+    initial={{ opacity: 0, y: 6 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: 0.3 }}
+    className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4"
+  >
+    <div className="text-xs text-gray-400">{label}</div>
+    <div className="text-xl font-semibold text-gray-100 mt-1">{value}</div>
+    {hint ? <div className="text-[11px] text-gray-500 mt-1">{hint}</div> : null}
+  </motion.div>
+);
 
+/** ------------------------------ Main Component ----------------------------------- */
+const AnalyticsTextReport: React.FC = () => {
+  const ctx = useDataContext() as ContextShape;
+
+  // Normalize
+  const { rows, columns, numericCols, categoricalCols, datetimeCols } = useRowsAndColumns(ctx);
+
+  // Derived counts
+  const totalRows = rows.length;
+  const totalCols = columns.length;
+  const duplicateCount = useMemo(() => countDuplicates(rows), [rows]);
+
+  // Missing per column
+  const missingByCol = useMemo(() => {
+    return columns.map((c) => {
+      const miss = rows.reduce((acc, r) => (isMissing(r?.[c]) ? acc + 1 : acc), 0);
+      return { column: c, missing: miss, percent: totalRows ? (miss / totalRows) * 100 : 0 };
+    });
+  }, [rows, columns, totalRows]);
+
+  // Low variance & high cardinality
+  const lowVarianceCols = useMemo(() => {
+    const out: string[] = [];
+    for (const c of numericCols) {
+      const vals = rows.map((r) => Number(r?.[c])).filter(isFiniteNumber);
+      const v = variance(vals);
+      if (v === 0) out.push(c);
+    }
+    return out;
+  }, [rows, numericCols]);
+
+  const cardinalityByCol = useMemo(() => {
+    return columns.map((c) => {
+      const vals = rows.map((r) => r?.[c]).filter((v) => !isMissing(v));
+      const u = new Set(vals.map((v) => (typeof v === "number" && Number.isNaN(v) ? "__NaN__" : v))).size;
+      return { column: c, unique: u };
+    });
+  }, [rows, columns]);
+
+  const highCardinalityCols = useMemo(() => {
+    return cardinalityByCol.filter((x) => x.unique > Math.max(50, totalRows * 0.5)).map((x) => x.column);
+  }, [cardinalityByCol, totalRows]);
+
+  // Mixed types & primary key candidates
+  const mixedTypes = useMemo(() => mixedTypesByColumn(rows, columns), [rows, columns]);
+  const primaryKeyCandidates = useMemo(() => {
+    return cardinalityByCol
+      .filter((x) => x.unique === totalRows && totalRows > 0)
+      .map((x) => x.column);
+  }, [cardinalityByCol, totalRows]);
+
+  // Numeric descriptive stats
+  const numericStats = useMemo(() => {
+    return numericCols.map((c) => {
+      const vals = rows.map((r) => Number(r?.[c])).filter(isFiniteNumber);
+      const cnt = vals.length;
+      const m = mean(vals);
+      const med = median(vals);
+      const mo = mode(vals) as number | null;
+      const sd = stdDev(vals);
+      const v = variance(vals);
+      const { min, max } = minMax(vals);
+      const range = max - min;
+      const sk = skewness(vals);
+      const ku = kurtosisExcess(vals);
+      return { column: c, count: cnt, mean: m, median: med, mode: mo, std: sd, variance: v, min, max, range, skewness: sk, kurtosis: ku };
+    });
+  }, [rows, numericCols]);
+
+  // Outliers per numeric: z-score & IQR
+  const outliersByNumeric = useMemo(() => {
+    return numericCols.map((c) => {
+      const vals = rows.map((r) => Number(r?.[c])).filter(isFiniteNumber);
+      const z = zScoreOutliers(vals, 3);
+      const iqr = iqrOutliers(vals);
+      return { column: c, zCount: z.count, iqrCount: iqr.count, iqrFences: iqr.fences };
+    });
+  }, [rows, numericCols]);
+
+  // Categorical descriptive stats
+  const categoricalStats = useMemo(() => {
+    return categoricalCols.map((c) => {
+      const vals = rows.map((r) => r?.[c]).filter((v) => !isMissing(v));
+      const freq = new Map<string, number>();
+      for (const v of vals) {
+        const k = String(v);
+        freq.set(k, (freq.get(k) || 0) + 1);
+      }
+      const pairs = Array.from(freq, ([k, v]) => ({ value: k, count: v }))
+        .sort((a, b) => b.count - a.count);
+      const most = pairs[0]?.value ?? null;
+      const least = pairs.length ? pairs[pairs.length - 1].value : null;
+      const ent = entropy(vals);
+      return { column: c, unique: freq.size, most, least, top: pairs.slice(0, 5), entropy: ent };
+    });
+  }, [rows, categoricalCols]);
+
+  // Datetime stats
+  const datetimeStats = useMemo(() => {
+    return datetimeCols.map((c) => {
+      const dates: Date[] = [];
+      for (const r of rows) {
+        const d = tryDate(r?.[c]);
+        if (d) dates.push(d);
+      }
+      if (!dates.length) return { column: c, count: 0, min: null as Date | null, max: null as Date | null, spanDays: 0, commonMonth: "—", commonWeekday: "—" };
+      dates.sort((a, b) => +a - +b);
+      const min = dates[0];
+      const max = dates[dates.length - 1];
+      const spanDays = Math.max(0, Math.round((+max - +min) / (1000 * 60 * 60 * 24)));
+      const monthFreq = new Map<number, number>();
+      const weekdayFreq = new Map<number, number>();
+      for (const d of dates) {
+        monthFreq.set(d.getMonth(), (monthFreq.get(d.getMonth()) || 0) + 1);
+        weekdayFreq.set(d.getDay(), (weekdayFreq.get(d.getDay()) || 0) + 1);
+      }
+      const best = (m: Map<number, number>) => {
+        let k = -1,
+          c = -1;
+        for (const [kk, vv] of m) if (vv > c) (k = kk), (c = vv);
+        return k;
+      };
+      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      return {
+        column: c,
+        count: dates.length,
+        min,
+        max,
+        spanDays,
+        commonMonth: monthNames[clamp(best(monthFreq), 0, 11)] ?? "—",
+        commonWeekday: weekdayNames[clamp(best(weekdayFreq), 0, 6)] ?? "—",
+      };
+    });
+  }, [rows, datetimeCols]);
+
+  // Correlations (numeric only)
+  const correlations = useMemo(() => {
+    const out: { pair: string; x: string; y: string; corr: number }[] = [];
+    for (let i = 0; i < numericCols.length; i++) {
+      for (let j = i + 1; j < numericCols.length; j++) {
+        const x = numericCols[i];
+        const y = numericCols[j];
+        const xs = rows.map((r) => Number(r?.[x])).filter(isFiniteNumber);
+        const ys = rows.map((r) => Number(r?.[y])).filter(isFiniteNumber);
+        const n = Math.min(xs.length, ys.length);
+        if (n < 2) continue;
+        const corr = pearson(xs.slice(0, n), ys.slice(0, n));
+        out.push({ pair: `${x} ↔ ${y}`, x, y, corr });
+      }
+    }
+    out.sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
+    return out;
+  }, [rows, numericCols]);
+
+  // Categorical vs categorical chi-square (lightweight)
+  const chiSquarePairs = useMemo(() => {
+    const out: { pair: string; x: string; y: string; chi2: number; df: number }[] = [];
+    if (categoricalCols.length < 2) return out;
+    const maxCats = 12; // cap to avoid explosion
+    for (let i = 0; i < categoricalCols.length; i++) {
+      for (let j = i + 1; j < categoricalCols.length; j++) {
+        const x = categoricalCols[i];
+        const y = categoricalCols[j];
+        // build levels
+        const xVals = Array.from(new Set(rows.map((r) => String(r?.[x])))).slice(0, maxCats);
+        const yVals = Array.from(new Set(rows.map((r) => String(r?.[y])))).slice(0, maxCats);
+        if (!xVals.length || !yVals.length) continue;
+        const table: number[][] = Array.from({ length: xVals.length }, () => Array(yVals.length).fill(0));
+        for (const r of rows) {
+          const xi = xVals.indexOf(String(r?.[x]));
+          const yi = yVals.indexOf(String(r?.[y]));
+          if (xi >= 0 && yi >= 0) table[xi][yi] += 1;
+        }
+        const { chi2, df } = chiSquareStat(table);
+        out.push({ pair: `${x} ~ ${y}`, x, y, chi2, df });
+      }
+    }
+    out.sort((a, b) => b.chi2 - a.chi2);
+    return out.slice(0, 10);
+  }, [rows, categoricalCols]);
+
+  // Text columns: simple word stats (optional)
+  const textCols = useMemo(() => {
+    return columns.filter((c) => !numericCols.includes(c) && !datetimeCols.includes(c));
+  }, [columns, numericCols, datetimeCols]);
+
+  const textStats = useMemo(() => {
+    const out: { column: string; avgWords: number; topWords: { token: string; count: number }[] }[] = [];
+    const stop = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "is", "are", "on", "for", "with", "as", "at", "by"]);
+    for (const c of textCols) {
+      let totalWords = 0,
+        docs = 0;
+      const freq = new Map<string, number>();
+      for (const r of rows) {
+        const v = r?.[c];
+        if (typeof v !== "string" || !v.trim()) continue;
+        docs++;
+        const tokens = v
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .split(/\s+/)
+          .filter((t) => t && !stop.has(t));
+        totalWords += tokens.length;
+        for (const t of tokens) freq.set(t, (freq.get(t) || 0) + 1);
+      }
+      if (!docs) continue;
+      const avgWords = totalWords / docs;
+      const topWords = Array.from(freq, ([token, count]) => ({ token, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+      out.push({ column: c, avgWords, topWords });
+    }
+    return out;
+  }, [rows, textCols]);
+
+  // Synthesized Insights (plain language)
+  const insights = useMemo(() => {
+    const lines: string[] = [];
+    if (!totalRows || !totalCols) {
+      lines.push("No data available. Upload a dataset to generate insights.");
+      return lines;
+    }
+    // Missingness
+    const badMiss = missingByCol.filter((x) => x.percent > 20).sort((a, b) => b.percent - a.percent);
+    if (badMiss.length) lines.push(`High missingness in: ${badMiss.slice(0, 5).map((x) => `${x.column} (${x.percent.toFixed(1)}%)`).join(", ")}. Consider imputing or dropping.`);
+
+    // Duplicates
+    if (duplicateCount > 0) lines.push(`${duplicateCount} duplicate row(s) detected. Consider deduplication.`);
+
+    // Primary key
+    if (primaryKeyCandidates.length) lines.push(`Possible primary key(s): ${primaryKeyCandidates.join(", ")}.`);
+
+    // Numeric skew/outliers
+    for (const s of numericStats) {
+      if (Math.abs(s.skewness) > 1) lines.push(`Column "${s.column}" is highly skewed (${s.skewness.toFixed(2)}). Consider transformation.`);
+    }
+    for (const o of outliersByNumeric) {
+      if (o.zCount > 0 || o.iqrCount > 0) lines.push(`Outliers in "${o.column}": z-score=${o.zCount}, IQR=${o.iqrCount}.`);
+    }
+
+    // Correlations
+    if (correlations.length) {
+      const top = correlations.slice(0, 3).map((c) => `${c.pair} (${c.corr >= 0 ? "+" : ""}${c.corr.toFixed(2)})`).join(", ");
+      lines.push(`Top correlations: ${top}.`);
+    }
+
+    // Categorical dominance
+    for (const c of categoricalStats) {
+      const top = c.top?.[0];
+      if (top && totalRows > 0) {
+        const pct = (top.count / totalRows) * 100;
+        if (pct > 70) lines.push(`Column "${c.column}" is heavily dominated by "${top.value}" (${pct.toFixed(1)}%).`);
+      }
+    }
+
+    // Datetime coverage
+    for (const d of datetimeStats) {
+      if (d.min && d.max) lines.push(`Column "${d.column}" covers ${d.spanDays} day(s) from ${d.min.toISOString().slice(0, 10)} to ${d.max.toISOString().slice(0, 10)}.`);
+    }
+
+    return lines;
+  }, [totalRows, totalCols, missingByCol, duplicateCount, primaryKeyCandidates, numericStats, outliersByNumeric, correlations, categoricalStats, datetimeStats]);
+
+  // ---------- UI: Empty State ----------
+  if (!totalRows || !totalCols) {
     return (
-      <Section title="Distribution Analysis" subtitle={distText}>
-        {chartData.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="name" stroke="#AEB6C2" interval={0} angle={-45} textAnchor="end" height={70} />
-                <YAxis stroke="#AEB6C2" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                />
-                <Bar dataKey="count">
-                  {chartData.map((_, i) => (
-                    <Cell key={`cell-d-${i}`} fill={cellColor(i)} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className="text-gray-400">No distribution data to display.</div>
-        )}
-      </Section>
+      <div className="h-64 grid place-items-center">
+        <div className="text-gray-400">No data available. Please upload a dataset to see analytics.</div>
+      </div>
     );
-  };
+  }
 
-  const TrendSection = () => {
-    const tData = trendSeries?.map((d) => ({ name: d.index, value: d.value })) ?? [];
-    return (
-      <Section title="Trend Analysis" subtitle={trendText}>
-        {tData.length > 1 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={tData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="name" stroke="#AEB6C2" />
-                <YAxis stroke="#AEB6C2" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                />
-                <Line type="monotone" dataKey="value" stroke="#26C6DA" strokeWidth={2} dot={{ r: 2 }} />
-              </LineChart>
-            </ResponsiveContainer>
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35 }}
+        className="bg-[#111318] border border-gray-800 rounded-2xl p-5"
+      >
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-100 flex items-center gap-2">
+              <Brain className="w-6 h-6 text-teal-400" /> Analytics Report (Text-Only)
+            </h2>
+            <p className="text-sm text-gray-400">Data-driven insights without charts — perfect for quick diagnostics and exports.</p>
           </div>
-        ) : (
-          <div className="text-gray-400">Not enough data to display a trend.</div>
-        )}
-      </Section>
-    );
-  };
-
-  const CorrelationSection = () => {
-    const cData =
-      correlations?.map((c, i) => ({
-        pair: c.pair,
-        corr: c.corr,
-        idx: i,
-      })) ?? [];
-
-    // Map corr [-1,1] to positive heights using abs for display; keep sign in label
-    const visData = cData.map((d) => ({ name: d.pair, value: Math.abs(d.corr), sign: d.corr >= 0 ? "+" : "-" }));
-
-    return (
-      <Section title="Correlation Analysis" subtitle={corrText}>
-        {visData.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={visData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="name" stroke="#AEB6C2" interval={0} angle={-30} textAnchor="end" height={70} />
-                <YAxis stroke="#AEB6C2" domain={[0, 1]} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                  formatter={(val: any, _name: any, entry: any) => {
-                    const original = correlations?.[entry?.payload?.idx]?.corr ?? 0;
-                    return [`${original >= 0 ? "+" : ""}${original.toFixed(3)}`, "corr"];
-                  }}
-                />
-                <Bar dataKey="value">
-                  {visData.map((_, i) => (
-                    <Cell key={`cell-c-${i}`} fill={cellColor(i)} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label="Rows" value={totalRows} />
+            <StatCard label="Columns" value={totalCols} />
+            <StatCard label="Numeric" value={numericCols.length} />
+            <StatCard label="Categorical" value={categoricalCols.length} />
           </div>
-        ) : (
-          <div className="text-gray-400">Not enough numeric columns to compute correlations.</div>
-        )}
-      </Section>
-    );
-  };
-
-  const AnomalySection = () => {
-    const aData =
-      anomalySeries?.map((v, i) => ({
-        index: i + 1,
-        value: v,
-        isAnomaly: isAnomalyIndex(i),
-      })) ?? [];
-
-    return (
-      <Section title="Anomaly Detection" subtitle={anomalyText}>
-        {aData.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={aData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="index" stroke="#AEB6C2" />
-                <YAxis stroke="#AEB6C2" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                  formatter={(val: any, _name: any, entry: any) => {
-                    return [val, entry?.payload?.isAnomaly ? "value (anomaly)" : "value"];
-                  }}
-                />
-                <Bar dataKey="value">
-                  {aData.map((d, i) => (
-                    <Cell key={`cell-a-${i}`} fill={d.isAnomaly ? "#EF5350" : cellColor(i)} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className="text-gray-400">No numeric series available for anomaly detection.</div>
-        )}
-
-        {/* List anomalies explicitly */}
-        <div className="mt-4">
-          {anomalyIdxs.length > 0 ? (
-            <div className="text-sm text-gray-300">
-              Indices flagged:{" "}
-              <span className="text-gray-100">
-                {anomalyIdxs.map((i) => i + 1).join(", ")}
-              </span>
-            </div>
-          ) : (
-            <div className="text-sm text-gray-400">No points exceeded the z-score threshold.</div>
-          )}
         </div>
-      </Section>
-    );
-  };
+      </motion.div>
 
-  const CategorySection = () => {
-    const cData = catCounts ?? [];
-
-    return (
-      <Section title="Categorical Distribution" subtitle={selectedCat ? `Breakdown for "${selectedCat}"` : "Select a categorical column to see counts."}>
-        {cData.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={cData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="name" stroke="#AEB6C2" interval={0} angle={-30} textAnchor="end" height={70} />
-                <YAxis stroke="#AEB6C2" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                />
-                <Bar dataKey="value">
-                  {cData.map((_, i) => (
-                    <Cell key={`cell-cat-${i}`} fill={cellColor(i)} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+      {/* Data Health */}
+      <Section
+        icon={<ActivitySquare className="w-5 h-5 text-blue-300" />}
+        title="Data Health Overview"
+        subtitle="Missingness, duplicates, cardinality, and type sanity checks"
+        defaultOpen
+      >
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4">
+            <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><TriangleAlert className="w-4 h-4"/> Missingness (Top 10)</div>
+            <div className="max-h-56 overflow-auto text-sm">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-gray-400 text-xs border-b border-gray-800">
+                    <th className="text-left py-2 pr-2">Column</th>
+                    <th className="text-right py-2">Missing</th>
+                    <th className="text-right py-2">%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {missingByCol
+                    .slice()
+                    .sort((a, b) => b.percent - a.percent)
+                    .slice(0, 10)
+                    .map((m) => (
+                      <tr key={m.column} className="border-b border-gray-900/60">
+                        <td className="py-2 pr-2 text-gray-100">{m.column}</td>
+                        <td className="py-2 text-right text-gray-300">{m.missing}</td>
+                        <td className="py-2 text-right text-gray-300">{m.percent.toFixed(2)}%</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        ) : (
-          <div className="text-gray-400">No categorical distribution available.</div>
-        )}
-      </Section>
-    );
-  };
-
-  const MissingnessSection = () => {
-    const mData = missingness ?? [];
-    return (
-      <Section title="Missingness Overview" subtitle={missingText}>
-        {mData.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={mData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="column" stroke="#AEB6C2" interval={0} angle={-30} textAnchor="end" height={70} />
-                <YAxis stroke="#AEB6C2" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                  formatter={(val: any, name: any) => {
-                    if (name === "percent") return [`${Number(val).toFixed(2)}%`, "missing"];
-                    return [val, name];
-                  }}
-                />
-                <Legend />
-                <Bar dataKey="missing" name="Missing Count">
-                  {mData.map((_, i) => (
-                    <Cell key={`cell-m1-${i}`} fill={COLORS_SEQUENTIAL[i % COLORS_SEQUENTIAL.length]} />
-                  ))}
-                </Bar>
-                <Bar dataKey="percent" name="Missing %">
-                  {mData.map((_, i) => (
-                    <Cell key={`cell-m2-${i}`} fill={COLORS_PRIMARY[(i + 3) % COLORS_PRIMARY.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="grid grid-cols-2 gap-4">
+            <StatCard label="Duplicates" value={duplicateCount} />
+            <StatCard label="Low-Variance (0)" value={lowVarianceCols.length} hint={lowVarianceCols.join(", ") || undefined} />
+            <StatCard label="High Cardinality" value={highCardinalityCols.length} hint={highCardinalityCols.join(", ") || undefined} />
+            <StatCard label="Primary Key?" value={primaryKeyCandidates.length ? "Yes" : "No"} hint={primaryKeyCandidates.join(", ") || undefined} />
           </div>
-        ) : (
-          <div className="text-gray-400">No missingness information available.</div>
-        )}
-      </Section>
-    );
-  };
-
-  const CardinalitySection = () => {
-    const cd = cardinality ?? [];
-    return (
-      <Section title="Cardinality (Unique Values)" subtitle={cardinalityText}>
-        {cd.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={cd}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#263141" />
-                <XAxis dataKey="column" stroke="#AEB6C2" interval={0} angle={-30} textAnchor="end" height={70} />
-                <YAxis stroke="#AEB6C2" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0B0E13",
-                    border: "1px solid #1f2937",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                />
-                <Bar dataKey="unique">
-                  {cd.map((_, i) => (
-                    <Cell key={`cell-u-${i}`} fill={cellColor(i)} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className="text-gray-400">No cardinality information available.</div>
-        )}
-      </Section>
-    );
-  };
-
-  // Summary table (compact but safe)
-  const SummaryTable = () => {
-    const cs = summary?.columnSummaries ?? [];
-    return (
-      <Section title="Summary Statistics" subtitle={summaryText}>
-        {cs.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+        </div>
+        <div className="mt-4">
+          <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><ListChecks className="w-4 h-4"/> Mixed Type Columns</div>
+          <div className="overflow-auto max-h-40 text-sm">
+            <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-800">
-                  <th className="text-left p-3 text-gray-300 font-medium">Column</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Missing</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Unique</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Mean</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Median</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Std</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Min</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Max</th>
+                <tr className="text-gray-400 text-xs border-b border-gray-800">
+                  <th className="text-left py-2 pr-2">Column</th>
+                  <th className="text-left py-2">Types seen</th>
                 </tr>
               </thead>
               <tbody>
-                {cs.map((s, i) => {
-                  const n = s.numericStats;
-                  return (
-                    <tr key={s.column} className="border-b border-gray-900 hover:bg-gray-900/30">
-                      <td className="p-3 text-gray-100 font-medium">{s.column}</td>
-                      <td className="p-3 text-gray-300">{s.missing}</td>
-                      <td className="p-3 text-gray-300">{s.unique}</td>
-                      <td className="p-3 text-gray-300">{n ? n.mean.toFixed(3) : "—"}</td>
-                      <td className="p-3 text-gray-300">{n ? n.median.toFixed(3) : "—"}</td>
-                      <td className="p-3 text-gray-300">{n ? n.std.toFixed(3) : "—"}</td>
-                      <td className="p-3 text-gray-300">{n ? n.min.toFixed(3) : "—"}</td>
-                      <td className="p-3 text-gray-300">{n ? n.max.toFixed(3) : "—"}</td>
-                    </tr>
-                  );
-                })}
+                {mixedTypes.map((t) => (
+                  <tr key={t.column} className="border-b border-gray-900/60">
+                    <td className="py-2 pr-2 text-gray-100">{t.column}</td>
+                    <td className="py-2 text-gray-300">{t.types.join(", ") || "—"}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
+        </div>
+      </Section>
+
+      {/* Descriptive Stats */}
+      <Section icon={<Sigma className="w-5 h-5 text-violet-300" />} title="Descriptive Statistics" subtitle="Numeric, categorical, and datetime summaries">
+        <div className="grid gap-4">
+          {/* Numeric */}
+          <div className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4">
+            <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Numeric Columns</div>
+            <div className="overflow-auto max-h-80 text-xs md:text-sm">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-gray-400 text-xs border-b border-gray-800">
+                    {[
+                      "Column",
+                      "Count",
+                      "Mean",
+                      "Median",
+                      "Mode",
+                      "Std",
+                      "Var",
+                      "Min",
+                      "Max",
+                      "Range",
+                      "Skew",
+                      "Kurtosis",
+                    ].map((h) => (
+                      <th key={h} className={`text-left py-2 ${h === "Column" ? "pr-2" : "text-right"}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {numericStats.map((s) => (
+                    <tr key={s.column} className="border-b border-gray-900/60">
+                      <td className="py-2 pr-2 text-gray-100">{s.column}</td>
+                      <td className="py-2 text-right text-gray-300">{s.count}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.mean)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.median)}</td>
+                      <td className="py-2 text-right text-gray-300">{s.mode ?? "—"}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.std)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.variance)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.min)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.max)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.range)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.skewness)}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(s.kurtosis)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Categorical */}
+          <div className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4">
+            <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><PieChartIcon className="w-4 h-4"/> Categorical Columns</div>
+            <div className="overflow-auto max-h-80 text-xs md:text-sm">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-gray-400 text-xs border-b border-gray-800">
+                    <th className="text-left py-2 pr-2">Column</th>
+                    <th className="text-right py-2">Unique</th>
+                    <th className="text-left py-2">Top Values (count)</th>
+                    <th className="text-left py-2">Most</th>
+                    <th className="text-left py-2">Least</th>
+                    <th className="text-right py-2">Entropy</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {categoricalStats.map((c) => (
+                    <tr key={c.column} className="border-b border-gray-900/60">
+                      <td className="py-2 pr-2 text-gray-100">{c.column}</td>
+                      <td className="py-2 text-right text-gray-300">{c.unique}</td>
+                      <td className="py-2 text-gray-300">
+                        {c.top?.map((t) => (
+                          <span key={t.value} className="inline-block mr-2 mb-1 px-2 py-0.5 rounded bg-gray-900/80 border border-gray-800 text-xs">
+                            {t.value} <span className="text-gray-400">({t.count})</span>
+                          </span>
+                        ))}
+                      </td>
+                      <td className="py-2 text-gray-300">{c.most ?? "—"}</td>
+                      <td className="py-2 text-gray-300">{c.least ?? "—"}</td>
+                      <td className="py-2 text-right text-gray-300">{fmt(c.entropy, 2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Datetime */}
+          <div className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4">
+            <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><CalendarIcon/> Datetime Columns</div>
+            <div className="overflow-auto max-h-80 text-xs md:text-sm">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-gray-400 text-xs border-b border-gray-800">
+                    <th className="text-left py-2 pr-2">Column</th>
+                    <th className="text-right py-2">Count</th>
+                    <th className="text-left py-2">Min</th>
+                    <th className="text-left py-2">Max</th>
+                    <th className="text-right py-2">Span (days)</th>
+                    <th className="text-left py-2">Common Month</th>
+                    <th className="text-left py-2">Common Weekday</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {datetimeStats.map((d) => (
+                    <tr key={d.column} className="border-b border-gray-900/60">
+                      <td className="py-2 pr-2 text-gray-100">{d.column}</td>
+                      <td className="py-2 text-right text-gray-300">{d.count}</td>
+                      <td className="py-2 text-gray-300">{d.min ? d.min.toISOString().slice(0, 10) : "—"}</td>
+                      <td className="py-2 text-gray-300">{d.max ? d.max.toISOString().slice(0, 10) : "—"}</td>
+                      <td className="py-2 text-right text-gray-300">{d.spanDays}</td>
+                      <td className="py-2 text-gray-300">{d.commonMonth}</td>
+                      <td className="py-2 text-gray-300">{d.commonWeekday}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      {/* Relationships */}
+      <Section icon={<ListTree className="w-5 h-5 text-emerald-300" />} title="Relationships" subtitle="Numeric correlations and categorical associations">
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4">
+            <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><TrendingUp className="w-4 h-4"/> Top | Bottom Correlations</div>
+            <div className="text-xs text-gray-400 mb-2">Absolute strongest and weakest relationships between numeric pairs.</div>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs font-semibold text-gray-300 mb-1">Strongest (Top 5)</div>
+                <ul className="text-sm text-gray-200 space-y-1 max-h-56 overflow-auto">
+                  {correlations.slice(0, 5).map((c) => (
+                    <li key={c.pair} className="flex items-center justify-between gap-3">
+                      <span className="truncate">{c.pair}</span>
+                      <span className="text-gray-400">{c.corr >= 0 ? "+" : ""}{c.corr.toFixed(3)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-300 mb-1">Weakest (Bottom 5)</div>
+                <ul className="text-sm text-gray-200 space-y-1 max-h-56 overflow-auto">
+                  {correlations
+                    .slice()
+                    .sort((a, b) => Math.abs(a.corr) - Math.abs(b.corr))
+                    .slice(0, 5)
+                    .map((c) => (
+                      <li key={c.pair} className="flex items-center justify-between gap-3">
+                        <span className="truncate">{c.pair}</span>
+                        <span className="text-gray-400">{c.corr >= 0 ? "+" : ""}{c.corr.toFixed(3)}</span>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div className="bg-[#0a0d12] border border-gray-800 rounded-xl p-4">
+            <div className="text-sm font-semibold text-gray-200 mb-2 flex items-center gap-2"><ListOrdered className="w-4 h-4"/> Chi-square (Top 5)</div>
+            <div className="text-xs text-gray-400 mb-2">Higher statistic suggests stronger dependence between categorical columns.</div>
+            <div className="max-h-56 overflow-auto text-sm">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-gray-400 text-xs border-b border-gray-800">
+                    <th className="text-left py-2 pr-2">Pair</th>
+                    <th className="text-right py-2">Chi²</th>
+                    <th className="text-right py-2">df</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chiSquarePairs.slice(0, 5).map((c) => (
+                    <tr key={c.pair} className="border-b border-gray-900/60">
+                      <td className="py-2 pr-2 text-gray-100">{c.pair}</td>
+                      <td className="py-2 text-right text-gray-300">{c.chi2.toFixed(2)}</td>
+                      <td className="py-2 text-right text-gray-300">{c.df}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      {/* Outliers */}
+      <Section icon={<ScanSearch className="w-5 h-5 text-rose-300" />} title="Outlier & Anomaly Summary" subtitle="Counts per numeric column using Z-score and IQR">
+        <div className="overflow-auto max-h-96 text-xs md:text-sm">
+          <table className="w-full">
+            <thead>
+              <tr className="text-gray-400 text-xs border-b border-gray-800">
+                <th className="text-left py-2 pr-2">Column</th>
+                <th className="text-right py-2">Z-score Count</th>
+                <th className="text-right py-2">IQR Count</th>
+                <th className="text-right py-2">IQR Fences</th>
+              </tr>
+            </thead>
+            <tbody>
+              {outliersByNumeric.map((o) => (
+                <tr key={o.column} className="border-b border-gray-900/60">
+                  <td className="py-2 pr-2 text-gray-100">{o.column}</td>
+                  <td className="py-2 text-right text-gray-300">{o.zCount}</td>
+                  <td className="py-2 text-right text-gray-300">{o.iqrCount}</td>
+                  <td className="py-2 text-right text-gray-300">[{fmt(o.iqrFences[0])}, {fmt(o.iqrFences[1])}]</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      {/* Text Analytics */}
+      {textStats.length > 0 && (
+        <Section icon={<FileSearch className="w-5 h-5 text-yellow-300" />} title="Text Columns (Quick Stats)" subtitle="Average length and most frequent tokens">
+          <div className="overflow-auto max-h-96 text-xs md:text-sm">
+            <table className="w-full">
+              <thead>
+                <tr className="text-gray-400 text-xs border-b border-gray-800">
+                  <th className="text-left py-2 pr-2">Column</th>
+                  <th className="text-right py-2">Avg Words</th>
+                  <th className="text-left py-2">Top Words</th>
+                </tr>
+              </thead>
+              <tbody>
+                {textStats.map((t) => (
+                  <tr key={t.column} className="border-b border-gray-900/60">
+                    <td className="py-2 pr-2 text-gray-100">{t.column}</td>
+                    <td className="py-2 text-right text-gray-300">{t.avgWords.toFixed(2)}</td>
+                    <td className="py-2 text-gray-300">
+                      {t.topWords.map((w) => (
+                        <span key={w.token} className="inline-block mr-2 mb-1 px-2 py-0.5 rounded bg-gray-900/80 border border-gray-800 text-xs">
+                          {w.token} <span className="text-gray-400">({w.count})</span>
+                        </span>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
+      {/* Insights */}
+      <Section icon={<CheckCircle2 className="w-5 h-5 text-teal-300" />} title="Auto Insights" subtitle="Plain-language findings and suggestions">
+        {insights.length ? (
+          <ul className="text-sm text-gray-200 space-y-2">
+            {insights.map((s, i) => (
+              <motion.li key={i} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, delay: i * 0.03 }} className="flex items-start gap-2">
+                <span className="mt-[3px]">•</span>
+                <span>{s}</span>
+              </motion.li>
+            ))}
+          </ul>
         ) : (
-          <div className="text-gray-400">No columns available.</div>
+          <div className="text-gray-400">No notable issues detected. Dataset looks healthy.</div>
         )}
       </Section>
-    );
-  };
-
-  /* ===============================================================================
-   * Empty state
-   * =============================================================================== */
-  if (len(rows) === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <p className="text-gray-400">No data available. Please upload a dataset to see analytics.</p>
-      </div>
-    );
-  }
-
-  /* ===============================================================================
-   * Layout
-   * =============================================================================== */
-  return (
-    <div className="space-y-6">
-      <motion.div
-        initial={{ opacity: 0, y: -12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35 }}
-      >
-        <Header />
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35, delay: 0.05 }}
-        className="grid grid-cols-1 lg:grid-cols-2 gap-6"
-      >
-        <SummaryTable />
-        <CategorySection />
-        <DistributionSection />
-        <TrendSection />
-        <CorrelationSection />
-        <AnomalySection />
-        <MissingnessSection />
-        <CardinalitySection />
-      </motion.div>
     </div>
   );
 };
 
-export default Analytics;
+// Small inline Calendar icon to avoid extra imports if not available in your icon set
+const CalendarIcon: React.FC = () => (
+  <svg className="w-4 h-4 text-gray-300" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M7 2v3M17 2v3M3 9h18M5 22h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
 
+export default AnalyticsTextReport;
