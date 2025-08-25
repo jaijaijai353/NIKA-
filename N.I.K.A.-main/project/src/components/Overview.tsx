@@ -15,8 +15,7 @@ import {
 } from 'recharts';
 
 /**
- * A helper function to render any cell value as a string, preventing auto-formatting issues.
- * This is crucial for displaying dates and other data types exactly as they appear.
+ * A helper function to render any cell value as a string, preserving its original format.
  * @param value - The data from a cell in the dataset.
  * @returns A string representation of the value.
  */
@@ -24,16 +23,6 @@ const renderCellValue = (value: any): string => {
   // Display null or undefined values as a consistent placeholder
   if (value === null || typeof value === 'undefined') {
     return '-';
-  }
-  
-  // If a value was incorrectly parsed into a Date object, format it cleanly.
-  // NOTE: The BEST solution is to prevent this during the initial file parsing.
-  if (value instanceof Date) {
-    // This provides a consistent, clean format (YYYY-MM-DD).
-    const year = value.getFullYear();
-    const month = String(value.getMonth() + 1).padStart(2, '0');
-    const day = String(value.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
   }
 
   // For objects or arrays, stringify them to avoid displaying "[object Object]"
