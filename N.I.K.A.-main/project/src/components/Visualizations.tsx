@@ -5,11 +5,10 @@
 // - Summary stats panel
 // - Sticky header table with pagination + search
 // - Selectable X / Y axis for chart generation
-// - Bar, Line, Area, Pie, Histogram, Scatter, Combo, Stacked, Heatmap
+// - Bar, Line, Area, Pie, Histogram, Scatter, Combo, Stacked
 // - Histogram binning implementation
 // - Per-bar distinct colors with palette selector
 // - Hover animations on bars (framer-motion + recharts events)
-// - Correlation heatmap
 // - Lots of comments and helper functions (keeps file long as requested)
 //
 // NOTE: Ensure `recharts`, `framer-motion` and your DataContext are installed and configured.
@@ -37,7 +36,6 @@ import {
   Legend,
 } from "recharts";
 import { useDataContext } from "../context/DataContext";
-import { HeatMapGrid } from "react-grid-heatmap"; // optional: if not installed remove heatmap or substitute
 import { Search, Download, Filter } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
@@ -773,26 +771,13 @@ const AdvancedVisualizations: React.FC = () => {
           {/* Right: Correlation & Details */}
           <div className="bg-gray-900/10 p-4 rounded border border-gray-700">
             <h3 className="font-semibold mb-2">Correlation Matrix</h3>
-            {correlationMatrix ? (
-              <div className="overflow-auto">
-                <div style={{ width: "100%", minWidth: 320 }}>
-                  <HeatMapGrid
-                    data={correlationMatrix}
-                    xLabels={numericColumns}
-                    yLabels={numericColumns}
-                    cellHeight={40}
-                    cellStyle={(_x, _y, value) => ({
-                      background: `rgba(59,130,246,${Math.abs(value)})`,
-                      color: "#fff",
-                      fontSize: 12,
-                    })}
-                    cellRender={(x, y, value) => <div style={{ padding: 6 }}>{value.toFixed(2)}</div>}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="text-sm text-gray-400">Not enough numeric columns to compute correlation.</div>
-            )}
+            {/* -- HEATMAP FEATURE REMOVED -- */}
+            <div className="text-sm text-gray-400">
+              {correlationMatrix
+                ? "Correlation data is available, but the heatmap component has been removed."
+                : "Not enough numeric columns to compute correlation."
+              }
+            </div>
           </div>
         </div>
       </motion.div>
