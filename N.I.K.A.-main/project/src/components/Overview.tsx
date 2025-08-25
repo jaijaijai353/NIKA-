@@ -1,348 +1,311 @@
-// src/pages/Overview.tsx
-
-import React, { useState, useMemo, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useMemo } from 'react';
+import { motion } from 'framer-motion';
 import { 
   Database, 
+  TrendingUp, 
   AlertTriangle, 
-  Users, 
+  Users,
   BarChart3,
-  PieChart as PieIcon,
-  TrendingUp,
-  X,
-  ArrowDown,
-  ArrowUp,
-  Search,
-  FileDown,
-  Inbox
+  PieChart
 } from 'lucide-react';
 import { useDataContext } from '../context/DataContext';
 import { 
-  BarChart, Bar, Cell as BarCell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
-} from 'recharts';
-import { 
-  PieChart, Pie, Cell as PieCell, Legend 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  PieChart as RechartsPieChart, Pie, Cell, Legend 
 } from 'recharts';
 
-
-// ===================================================================================
-// 1. TYPE DEFINITIONS
-// (Previously in src/types/data.ts)
-// ===================================================================================
-
-export interface NumericColumnStats {
-  min: number;
-  max: number;
-  mean: number;
-  stdDev: number;
-}
-export interface CategoricalColumnStats {
-  valueCounts: Record<string, number>;
-  uniqueValues: number;
-}
-export interface DataColumn {
-  name: string;
-  type: 'numeric' | 'categorical' | 'date' | 'unknown' | 'integer';
-  missingCount: number;
-  stats: NumericColumnStats | CategoricalColumnStats | null;
-}
-export interface DataRow {
-  [key: string]: string | number | null | undefined;
-}
-export interface Dataset {
-  name: string;
-  columns: DataColumn[];
-  data: DataRow[];
-  uploadedAt?: Date;
-}
-export interface DataSummary {
-  totalRows: number;
-  totalColumns: number;
-  missingValues: number;
-  duplicates: number;
-}
-export interface DataContextType {
-  dataset: Dataset | null;
-  dataSummary: DataSummary | null;
-  isLoading: boolean;
-}
-export interface SortConfig {
-  key: string;
-  direction: 'ascending' | 'descending';
-}
-
-
-// ===================================================================================
-// 2. CONSTANTS
-// (Previously in src/constants.ts)
-// ===================================================================================
-
-const ROWS_PER_PAGE = 10;
-const CHART_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4'];
-
-
-// ===================================================================================
-// 3. UTILITY FUNCTIONS
-// (Previously in utils/ and hooks/)
-// ===================================================================================
-
 /**
- * Escapes a value for CSV format.
+ * A helper function to render any cell value as a string, preserving its original format.
+ * @param value - The data from a cell in the dataset.
+ * @returns A string representation of the value.
  */
-const escapeCsvValue = (value: any): string => {
-  if (value === null || typeof value === 'undefined') return '';
-  const stringValue = String(value);
-  if (/[",\n]/.test(stringValue)) {
-    return `"${stringValue.replace(/"/g, '""')}"`;
-  }
-  return stringValue;
-};
-
-/**
- * Converts data to a CSV string and triggers a download.
- */
-const exportToCSV = (data: DataRow[], columns: string[], filename: string): void => {
-  const header = columns.map(escapeCsvValue).join(',');
-  const rows = data.map(row => columns.map(col => escapeCsvValue(row[col])).join(','));
-  const csvContent = [header, ...rows].join('\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-  link.setAttribute('href', url);
-  link.setAttribute('download', `${filename}.csv`);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
-
-/**
- * Calculates detailed statistics for a column.
- */
-const calculateColumnStats = (column: Pick<DataColumn, 'name' | 'type'>, data: DataRow[]): NumericColumnStats | CategoricalColumnStats | null => {
-  const values = data.map(row => row[column.name]);
-
-  if (column.type === 'numeric' || column.type === 'integer') {
-    const numericValues = values.map(Number).filter(n => !isNaN(n) && Number.isFinite(n));
-    if (numericValues.length === 0) return null;
-    const sum = numericValues.reduce((a, b) => a + b, 0);
-    const mean = sum / numericValues.length;
-    const stdDev = Math.sqrt(numericValues.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b, 0) / numericValues.length);
-    return {
-      min: Math.min(...numericValues),
-      max: Math.max(...numericValues),
-      mean: parseFloat(mean.toFixed(2)),
-      stdDev: parseFloat(stdDev.toFixed(2)),
-    };
+const renderCellValue = (value: any): string => {
+  // Display null or undefined values as a consistent placeholder
+  if (value === null || typeof value === 'undefined') {
+    return '-';
   }
 
-  if (column.type === 'categorical' || column.type === 'date') {
-    const valueCounts = values.reduce<Record<string, number>>((acc, val) => {
-      const key = String(val ?? 'NULL');
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
-    return { valueCounts, uniqueValues: Object.keys(valueCounts).length };
+  // For objects or arrays, stringify them to avoid displaying "[object Object]"
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
   }
 
-  return null;
+  // For all other primitive types (string, number, boolean), convert to string
+  return String(value);
 };
 
-/**
- * Determines card color based on value.
- */
-const getCardColor = (title: string, value: number, totalRows: number): string => {
-    if (title === 'Missing Values' || title === 'Duplicates') {
-        if (value === 0) return 'text-green-400';
-        if (value <= (totalRows * 0.05)) return 'text-yellow-400';
-        return 'text-red-400';
-    }
-    return 'text-blue-400';
-};
-
-
-// ===================================================================================
-// 4. CHILD & HELPER COMPONENTS
-// (All UI pieces are defined here before being used in the main component)
-// ===================================================================================
-
-// --- ErrorBoundary Component ---
-class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
-  state = { hasError: false };
-  static getDerivedStateFromError = () => ({ hasError: true });
-  componentDidCatch = (error: Error, errorInfo: ErrorInfo) => console.error("Dashboard Error:", error, errorInfo);
-  render = () => this.state.hasError ? (
-    <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-8 text-center">
-      <AlertTriangle className="mx-auto h-12 w-12 text-red-400 mb-4" />
-      <h2 className="text-xl font-bold text-white">Something went wrong</h2>
-      <p className="text-red-300 mt-2">There was an error rendering the dashboard. Please try refreshing.</p>
-    </div>
-  ) : this.props.children;
-}
-
-// --- Skeleton Loader Components ---
-const CardSkeleton: React.FC = () => (
-  <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700 animate-pulse">
-    <div className="h-4 bg-gray-600 rounded w-1/3 mb-4"></div>
-    <div className="h-8 bg-gray-600 rounded w-1/2"></div>
-  </div>
-);
-const ChartSkeleton: React.FC = () => (
-  <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700 animate-pulse">
-    <div className="h-6 bg-gray-600 rounded w-1/2 mb-6"></div>
-    <div className="flex items-end justify-center h-[300px] space-x-4">
-      {[...Array(5)].map((_, i) => <div key={i} style={{ height: `${20 + i * 15}%`}} className="w-8 bg-gray-600 rounded-t-md"></div>)}
-    </div>
-  </div>
-);
-const TableSkeleton: React.FC = () => (
-    <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700 animate-pulse">
-        <div className="h-6 bg-gray-600 rounded w-1/3 mb-6"></div>
-        <div className="space-y-4">
-            {[...Array(5)].map((_, i) => <div key={i} className="h-8 bg-gray-600 rounded w-full"></div>)}
-        </div>
-    </div>
-);
-
-
-// --- UI Components for the Dashboard ---
-const SummaryCard: React.FC<{ title: string, value: number, icon: React.ElementType, color: string, bgColor: string, index: number, onClick: () => void }> = ({ title, value, icon: Icon, color, bgColor, index, onClick }) => (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: index * 0.1 }} className={`${bgColor} rounded-lg p-6 border border-gray-700 backdrop-blur-sm hover:border-gray-500 transition-all duration-200 cursor-pointer`} onClick={onClick}>
-        <div className="flex items-center justify-between"><p className="text-gray-400 text-sm">{title}</p><Icon className={`h-8 w-8 ${color}`} /></div>
-        <p className={`text-3xl font-bold ${color}`}>{value.toLocaleString()}</p>
-    </motion.div>
-);
-
-const DetailsModal: React.FC<{ column: DataColumn | null; onClose: () => void }> = ({ column, onClose }) => {
-    // ... (Modal implementation with inline charts as previously defined)
-};
-
-const ColumnTypesChart: React.FC<{ pieData: any[]; selectedType: string | null; setSelectedType: (type: string | null) => void }> = ({ pieData, selectedType, setSelectedType }) => {
-    // ... (Pie chart component implementation as previously defined)
-};
-
-const MissingValuesChart: React.FC<{ missingColumns: any[]; maxMissingCount: number; onBarClick: (col: string) => void; activeFilterColumn?: string }> = ({ missingColumns, maxMissingCount, onBarClick, activeFilterColumn }) => {
-    // ... (Bar chart component implementation as previously defined)
-};
-
-const DataPreviewTable: React.FC<{ columns: DataColumn[]; rows: DataRow[]; sortConfig: SortConfig | null; onSort: (key: string) => void; datasetName: string; }> = ({ columns, rows, sortConfig, onSort, datasetName }) => {
-    // ... (Full table component implementation with search, pagination, and export as previously defined)
-};
-
-
-// ===================================================================================
-// 5. MAIN OVERVIEW COMPONENT
-// ===================================================================================
 
 const Overview: React.FC = () => {
-    const { dataset: rawDataset, dataSummary, isLoading } = useDataContext() as DataContextType;
+  const { dataset, dataSummary } = useDataContext();
+  const [selectedType, setSelectedType] = useState<string | null>(null);
 
-    // --- STATE MANAGEMENT ---
-    const [modalData, setModalData] = useState<DataColumn | null>(null);
-    const [activeFilter, setActiveFilter] = useState<{ type: 'duplicates' | 'missing'; column?: string } | null>(null);
-    const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
-
-    // --- DATA PROCESSING (Previously in a custom hook) ---
-    const { enhancedDataset, pieData, missingColumns, maxMissingCount, duplicateRowIndices } = useMemo(() => {
-        if (!rawDataset || !dataSummary) {
-            return { enhancedDataset: null, pieData: [], missingColumns: [], maxMissingCount: 0, duplicateRowIndices: new Set<number>() };
-        }
-        
-        const enhancedColumns = rawDataset.columns.map(col => ({
-            ...col,
-            stats: calculateColumnStats(col, rawDataset.data),
-        }));
-        const enhancedDataset = { ...rawDataset, columns: enhancedColumns };
-
-        // ... (Full data processing logic for pieData, missingColumns, duplicateRowIndices)
-        
-        return { enhancedDataset, /* ...other data... */ };
-    }, [rawDataset, dataSummary]);
-
-    // --- DERIVED STATE FOR RENDERING ---
-    const previewData = useMemo(() => {
-        if (!enhancedDataset) return [];
-        // ... (Full filtering and sorting logic for preview data)
-    }, [enhancedDataset, activeFilter, sortConfig, duplicateRowIndices]);
-
-    // --- EVENT HANDLERS ---
-    const handleSort = useCallback((key: string) => {
-        // ... (Sorting handler logic)
-    }, [sortConfig]);
-    
-    const handleCardClick = (title: string) => {
-        // ... (Card click handler logic)
-    };
-    
-    const handleBarClick = (columnName: string) => {
-        // ... (Bar click handler logic)
-    };
-
-    // --- RENDER LOGIC ---
-
-    if (isLoading) {
-        return (
-            <div className="p-6 space-y-6">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                    {[...Array(4)].map((_, i) => <CardSkeleton key={i} />)}
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <ChartSkeleton /><ChartSkeleton />
-                </div>
-                <TableSkeleton />
-            </div>
-        );
+  // Memoize derived data to prevent recalculations on every render
+  const { pieData, missingColumns, maxMissingCount, previewData, columnTotals } = useMemo(() => {
+    if (!dataset) {
+      return { pieData: [], missingColumns: [], maxMissingCount: 0, previewData: [], columnTotals: {} };
     }
 
-    if (!enhancedDataset || !dataSummary) {
-        return (
-            <div className="flex items-center justify-center h-96 text-gray-400">
-                <div className="text-center">
-                    <Database className="mx-auto h-16 w-16 text-gray-600 mb-4" />
-                    <h2 className="text-xl font-semibold text-white">No Data Available</h2>
-                    <p className="mt-2">Please upload a file to begin analysis.</p>
-                </div>
-            </div>
-        );
-    }
+    // Pie Chart Data for Column Types
+    const typeData: Record<string, number> = {};
+    dataset.columns.forEach(col => {
+      const type = col.type || 'Unknown';
+      typeData[type] = (typeData[type] || 0) + 1;
+    });
+    const total = Object.values(typeData).reduce((sum, val) => sum + val, 0);
+    const calculatedPieData = Object.entries(typeData).map(([name, value]) => ({
+      name,
+      value,
+      percentage: total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'
+    }));
 
-    const summaryCards = [
-        { title: 'Total Rows', value: dataSummary.totalRows, icon: Database, bgColor: 'bg-blue-500/10' },
-        { title: 'Total Columns', value: dataSummary.totalColumns, icon: BarChart3, bgColor: 'bg-green-500/10' },
-        { title: 'Missing Values', value: dataSummary.missingValues, icon: AlertTriangle, bgColor: 'bg-yellow-500/10' },
-        { title: 'Duplicates', value: dataSummary.duplicates, icon: Users, bgColor: 'bg-red-500/10' }
-    ];
+    // Bar Chart Data for Missing Values
+    const calculatedMissingColumns = dataset.columns
+      .filter(col => typeof col.missingCount === 'number' && col.missingCount > 0)
+      .map(col => ({
+        ...col,
+        highlight: selectedType ? col.type === selectedType : true
+      }));
 
+    const calculatedMaxMissing = Math.max(0, ...calculatedMissingColumns.map(col => col.missingCount || 0));
+    
+    // Preview Data (Top 5 Rows)
+    const calculatedPreviewData = dataset.data.slice(0, 5);
+    
+    // Totals for numeric columns in the preview table footer
+    const totals: Record<string, string> = {};
+    dataset.columns.forEach(col => {
+      // Use the pre-calculated column type for a more reliable check
+      if (col.type === 'numeric' || col.type === 'integer') {
+        const total = dataset.data.reduce((sum, row) => {
+          const value = row[col.name];
+          // Ensure value is a valid number before adding
+          return sum + (typeof value === 'number' && !isNaN(value) ? value : 0);
+        }, 0);
+        totals[col.name] = total.toLocaleString();
+      } else {
+        totals[col.name] = ''; // Display nothing for non-numeric columns
+      }
+    });
+
+    return {
+      pieData: calculatedPieData,
+      missingColumns: calculatedMissingColumns,
+      maxMissingCount: calculatedMaxMissing,
+      previewData: calculatedPreviewData,
+      columnTotals: totals,
+    };
+  }, [dataset, selectedType]);
+
+  if (!dataset || !dataSummary) {
     return (
-        <ErrorBoundary>
-            <div className="p-4 sm:p-6 space-y-6 bg-gray-900 text-white min-h-screen">
-                <DetailsModal column={modalData} onClose={() => setModalData(null)} />
-                
-                <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
-                    <h1 className="text-3xl font-bold text-white mb-2">Data Overview</h1>
-                    <p className="text-gray-400">Analysis for: <span className="font-semibold text-gray-200">{enhancedDataset.name}</span></p>
-                    <p className="text-gray-400 text-sm">Uploaded: {enhancedDataset.uploadedAt?.toLocaleString('en-IN') || 'Not available'}</p>
-                </motion.div>
-                
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
-                    {summaryCards.map((card, index) => (
-                        <SummaryCard key={card.title} {...card} color={getCardColor(card.title, card.value, dataSummary.totalRows)} index={index} onClick={() => handleCardClick(card.title)} />
-                    ))}
-                </div>
-                
-                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-                    <div className="lg:col-span-2">
-                        <ColumnTypesChart pieData={pieData} selectedType={activeFilter?.type === 'missing' ? 'missing' : null} setSelectedType={() => {}} />
-                    </div>
-                    <div className="lg:col-span-3">
-                        <MissingValuesChart missingColumns={missingColumns} maxMissingCount={maxMissingCount} onBarClick={handleBarClick} activeFilterColumn={activeFilter?.column} />
-                    </div>
-                </div>
-                
-                <DataPreviewTable columns={enhancedDataset.columns} rows={previewData} sortConfig={sortConfig} onSort={handleSort} datasetName={enhancedDataset.name} />
-            </div>
-        </ErrorBoundary>
+      <div className="flex items-center justify-center h-64">
+        <p className="text-gray-400">No data available. Please upload a file to begin.</p>
+      </div>
     );
+  }
+  
+  const getCardColor = (title: string, value: number) => {
+    switch(title) {
+      case 'Missing Values':
+      case 'Duplicates':
+        if (value === 0) return 'text-green-400';
+        if (value <= (dataset.data.length * 0.05)) return 'text-yellow-400'; // Warning if >5%
+        return 'text-red-400';
+      default:
+        return 'text-blue-400';
+    }
+  };
+
+  const summaryCards = [
+    { title: 'Total Rows', value: dataSummary.totalRows, icon: Database, bgColor: 'bg-blue-500/10' },
+    { title: 'Total Columns', value: dataSummary.totalColumns, icon: BarChart3, bgColor: 'bg-green-500/10' },
+    { title: 'Missing Values', value: dataSummary.missingValues, icon: AlertTriangle, bgColor: 'bg-yellow-500/10' },
+    { title: 'Duplicates', value: dataSummary.duplicates, icon: Users, bgColor: 'bg-red-500/10' }
+  ];
+
+  const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4'];
+  const generateColor = (index: number) => `hsl(${(index * 60) % 360}, 70%, 50%)`;
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700"
+      >
+        <h2 className="text-2xl font-bold text-white mb-2">Data Overview</h2>
+        <p className="text-gray-400">Dataset: {dataset.name}</p>
+        {/* FIX: Added optional chaining (?.) and a fallback text to prevent crash */}
+        <p className="text-gray-400 text-sm">Uploaded: {dataset.uploadedAt?.toLocaleString() || 'Not available'}</p>
+      </motion.div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+        {summaryCards.map((card, index) => {
+          const Icon = card.icon;
+          return (
+            <motion.div
+              key={card.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: index * 0.1 }}
+              className={`${card.bgColor} rounded-lg p-6 border border-gray-700 backdrop-blur-sm hover:border-gray-500 transition-all duration-200`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-gray-400 text-sm">{card.title}</p>
+                  <p className={`text-3xl font-bold ${getCardColor(card.title, Number(card.value))}`}>
+                    {Number(card.value).toLocaleString()}
+                  </p>
+                </div>
+                <Icon className={`h-8 w-8 ${getCardColor(card.title, Number(card.value))}`} />
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Charts Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Column Types Distribution */}
+        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
+          <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
+            <PieChart className="h-5 w-5 mr-2 text-purple-400" />
+            Column Types Distribution
+          </h3>
+          {pieData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <RechartsPieChart>
+                <Pie
+                  data={pieData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={60}
+                  outerRadius={100}
+                  dataKey="value"
+                  paddingAngle={5}
+                  label={({ name, percentage }) => `${name} (${percentage}%)`}
+                  onClick={(data) => setSelectedType(prev => prev === data.name ? null : data.name)} // Toggle selection
+                  cursor="pointer"
+                >
+                  {pieData.map((entry, index) => (
+                    <Cell
+                      key={`cell-${index}`}
+                      fill={COLORS[index % COLORS.length] || generateColor(index)}
+                      stroke={selectedType === entry.name ? '#fff' : 'none'}
+                      strokeWidth={selectedType === entry.name ? 3 : 0}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip
+                  content={({ payload }) => {
+                    if (!payload || payload.length === 0) return null;
+                    const data = payload[0].payload;
+                    return (
+                      <div className="bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white shadow-lg">
+                        <p><strong>{data.name}</strong></p>
+                        <p>Count: {data.value}</p>
+                        <p>Percentage: {data.percentage}%</p>
+                      </div>
+                    );
+                  }}
+                />
+                <Legend iconType="circle" />
+              </RechartsPieChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-gray-400 text-center mt-12">No column type data available</p>
+          )}
+        </motion.div>
+
+        {/* Missing Values by Column */}
+        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
+          <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
+            <TrendingUp className="h-5 w-5 mr-2 text-green-400" />
+            Missing Values by Column
+          </h3>
+          {missingColumns.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={missingColumns} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="name" stroke="#9CA3AF" fontSize={12} angle={-45} textAnchor="end" height={80} interval={0} />
+                <YAxis stroke="#9CA3AF" />
+                <Tooltip
+                  cursor={{ fill: 'rgba(107, 114, 128, 0.1)' }}
+                  content={({ payload }) => {
+                    if (!payload || payload.length === 0) return null;
+                    const data = payload[0].payload;
+                    return (
+                      <div className="bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white shadow-lg">
+                        <p><strong>{data.name}</strong></p>
+                        <p>Missing: {data.missingCount}</p>
+                        <p>Type: {data.type}</p>
+                      </div>
+                    );
+                  }}
+                />
+                <Bar dataKey="missingCount">
+                  {missingColumns.map((col, idx) => {
+                    const isMax = col.missingCount === maxMissingCount && col.highlight;
+                    const fillColor = isMax ? '#F87171' : col.highlight ? '#FBBF24' : '#4B5563';
+                    return <Cell key={`barcell-${idx}`} fill={fillColor} />;
+                  })}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-full">
+               <p className="text-gray-400 text-center">No missing values found in the dataset! ✨</p>
+            </div>
+          )}
+        </motion.div>
+      </div>
+
+      {/* Data Preview Table */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.2 }} className="bg-gray-800/30 backdrop-blur-sm rounded-lg p-6 border border-gray-700">
+        <h3 className="text-xl font-semibold text-white mb-4">Data Preview (First 5 Rows)</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-700/20">
+              <tr className="border-b-2 border-gray-600">
+                {dataset.columns.map(col => (
+                  <th key={col.name} className="p-3 text-gray-300 font-semibold tracking-wider">
+                    {col.name}
+                    <span className="block text-xs text-purple-400 font-normal">{col.type}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {previewData.map((row, index) => (
+                <tr key={index} className="border-b border-gray-700 hover:bg-gray-700/20 transition-colors">
+                  {dataset.columns.map(col => (
+                    <td
+                      key={col.name}
+                      className={`p-3 text-gray-300 whitespace-nowrap ${selectedType === col.type ? 'bg-purple-500/10' : ''}`}
+                    >
+                      {renderCellValue(row[col.name])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="bg-gray-700/20">
+                <tr className="border-t-2 border-gray-600">
+                    {dataset.columns.map(col => (
+                        <td key={`${col.name}-total`} className="p-3 text-gray-300 font-bold">
+                            {columnTotals[col.name]}
+                        </td>
+                    ))}
+                </tr>
+            </tfoot>
+          </table>
+        </div>
+      </motion.div>
+    </div>
+  );
 };
 
 export default Overview;
