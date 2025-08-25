@@ -1,7 +1,7 @@
 // src/components/DataCleaning.tsx
 // --------------------------------------------------------------------------------------------
 //
-// Enhanced Data Cleaning Workbench (Full, non-condensed ~1200 lines)
+// Enhanced Data Cleaning Workbench (Full, non-condensed ~1300 lines)
 // - Independent collapsible cards laid out as true side-by-side columns
 // - Expanded toolset: Missing Data, Duplicates, Data Types, Standardize Text,
 //   Normalize Numbers, Drop Columns
@@ -9,6 +9,12 @@
 // - Live preview (top 100 rows), with change-highlighting and sticky header
 // - CSV export of the current preview
 // - Clean, modern UI using Tailwind + Framer Motion animations
+// - FIXES IMPLEMENTED:
+//   - Added toast notifications for user feedback.
+//   - Prevented redundant/duplicate actions.
+//   - Removed direct DOM manipulation (getElementById) in favor of React state.
+//   - Fixed bugs related to custom fill data types, chained number scaling, and CSV export headers.
+//   - Refactored duplicate code in event handlers.
 //
 // Assumptions about DataContext shape:
 //   dataset: {
@@ -24,7 +30,6 @@ import React, {
   useState,
   useMemo,
   useCallback,
-  useEffect,
   Fragment,
 } from "react";
 
@@ -54,6 +59,7 @@ import {
 } from "lucide-react";
 
 import { saveAs } from "file-saver";
+import toast, { Toaster } from "react-hot-toast";
 
 import { useDataContext } from "../context/DataContext";
 
@@ -122,6 +128,17 @@ const parseNumberLike = (v: any): number => {
   const cleaned = String(v).replace(/[^0-9+\-\.eE]/g, "");
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : NaN;
+};
+
+/**
+ * NEW: Tries to convert a string to a number if it looks numeric, otherwise returns the string.
+ * This is crucial for fixing the custom fill value bug.
+ */
+const autoParse = (v: string): string | number => {
+  const trimmed = v.trim();
+  if (trimmed === "") return v; // Keep empty strings as is
+  const num = Number(trimmed);
+  return isNaN(num) ? v : num;
 };
 
 /** Converts unknown input to Date or null if invalid. */
@@ -395,6 +412,10 @@ const DataCleaning: React.FC = () => {
   // Local UI state
   // -------------------------------------------------------------
   const [actions, setActions] = useState<CleaningAction[]>([]);
+  
+  // NEW: State to manage the values of the scale inputs without direct DOM access
+  const [scaleInputs, setScaleInputs] = useState<Record<string, { min: string; max: string }>>({});
+
 
   const [openColumns, setOpenColumns] = useState({
     missing: true,
@@ -607,6 +628,8 @@ const DataCleaning: React.FC = () => {
 
         case "NUMBER_SCALE": {
           const col = action.payload.columnName!;
+          // IMPORTANT: Chaining scale operations is mathematically incorrect.
+          // The UI now prevents this, so this logic can assume it's the only scale op.
           const nums = processed.map((r) => parseNumberLike(r[col]?.value));
           const finite = nums.filter((n) => Number.isFinite(n)) as number[];
           if (!finite.length) break;
@@ -656,23 +679,34 @@ const DataCleaning: React.FC = () => {
   // Handlers
   // -------------------------------------------------------------
 
+  /**
+   * NEW: Centralized handler for adding actions with redundancy checks.
+   */
   const handleAddAction = useCallback((action: Omit<CleaningAction, "id">) => {
+    // Check for redundancy before adding
+    const isRedundant = actions.some(a => {
+        if (a.type !== action.type) return false;
+        // For actions without a specific column, just check type
+        if (!action.payload.columnName) {
+            return a.type === 'REMOVE_DUPLICATES';
+        }
+        // For actions on a column, check type and column name
+        return a.payload.columnName === action.payload.columnName;
+    });
+
+    if (isRedundant) {
+        toast.error(`A "${action.description}" step already exists.`);
+        return;
+    }
+
     const newAction: CleaningAction = {
       ...action,
       id: `${Date.now()}-${Math.random()}`,
     };
     setActions((prev) => [...prev, newAction]);
-  }, []);
+    toast.success(`Added: ${newAction.description}`);
+  }, [actions]);
 
-  // --------------------------------------------------------------------------------------
-  // PATCHED: handleApplyChanges
-  // This function is updated to prevent a crash when all data is filtered out.
-  // OLD BEHAVIOR: Inferred columns from the processed data. If data was empty, it
-  //               created `columns: []`, causing crashes in downstream components.
-  // NEW BEHAVIOR:  Calculates the new column list by taking the original columns and
-  //               subtracting any columns explicitly dropped in the 'actions' queue.
-  //               This is deterministic and safe, even if the final data is empty.
-  // --------------------------------------------------------------------------------------
   const handleApplyChanges = useCallback(() => {
     if (!originalDataset) return;
 
@@ -699,11 +733,19 @@ const DataCleaning: React.FC = () => {
 
     setDataset({ columns: nextColumns, data: finalCleanedData });
     setActions([]);
+    toast.success("Cleaning recipe applied successfully!");
     
-  }, [preview, originalDataset, setDataset, actions]); // Added 'actions' to dependency array
+  }, [preview, originalDataset, setDataset, actions]);
 
-  const handleReset = useCallback(() => setActions([]), []);
+  const handleReset = useCallback(() => {
+    setActions([]);
+    toast.success("Cleaning recipe has been reset.");
+  }, []);
 
+  /**
+   * FIXED: This function now correctly determines the final headers, even if the
+   * preview data is empty, by checking the 'DROP_COLUMN' actions.
+   */
   const exportCSV = useCallback(() => {
     if (!originalDataset) return;
 
@@ -715,16 +757,47 @@ const DataCleaning: React.FC = () => {
       return obj;
     });
 
-    const columnsFromPreview = new Set<string>();
-    flattened.forEach((r) => Object.keys(r).forEach((k) => columnsFromPreview.add(k)));
-    const headerCols = columnsFromPreview.size
-      ? Array.from(columnsFromPreview)
-      : originalDataset.columns.map((c) => c.name);
+    const droppedColumns = new Set<string>(
+      actions
+        .filter(action => action.type === 'DROP_COLUMN' && action.payload.columnName)
+        .map(action => action.payload.columnName!)
+    );
 
-    const csv = objectsToCSV(flattened, headerCols);
+    const finalColumns = originalDataset.columns
+      .filter(col => !droppedColumns.has(col.name))
+      .map(col => col.name);
+
+    const csv = objectsToCSV(flattened, finalColumns);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     saveAs(blob, `cleaned_dataset_${Date.now()}.csv`);
-  }, [originalDataset, preview]);
+    toast.success("CSV export started.");
+  }, [originalDataset, preview, actions]);
+
+
+  // -------------------------------------------------------------
+  // REFACTORED: Shared logic for submitting from an input field
+  // -------------------------------------------------------------
+
+  const handleCustomFillSubmit = (value: string, name: string) => {
+    if (value.trim() === "") return;
+    const parsedValue = autoParse(value); // FIX: Auto-parse to number if possible
+    handleAddAction({
+      type: "FILL_MISSING",
+      description: `Fill missing in '${name}' with "${parsedValue}"`,
+      payload: { columnName: name, strategy: "custom", customValue: parsedValue },
+    });
+  };
+
+  const handleRoundSubmit = (value: string, name: string) => {
+    const places = Number(value);
+    if (!Number.isFinite(places)) return;
+     handleAddAction({
+        type: "NUMBER_ROUND",
+        description: `Round '${name}' to ${places} decimals`,
+        payload: { columnName: name, roundTo: places },
+    });
+  };
+
 
   // -------------------------------------------------------------
   // Guard: No dataset loaded
@@ -749,6 +822,13 @@ const DataCleaning: React.FC = () => {
   // ==========================================================================================
   return (
     <div className="p-6 space-y-6">
+      {/* NEW: Toaster component for notifications */}
+      <Toaster position="bottom-right" toastOptions={{
+        style: { background: '#334155', color: '#e2e8f0' },
+        success: { iconTheme: { primary: '#22c55e', secondary: '#334155' } },
+        error: { iconTheme: { primary: '#ef4444', secondary: '#334155' } },
+      }} />
+
       <Header
         onApply={handleApplyChanges}
         onReset={handleReset}
@@ -785,7 +865,7 @@ const DataCleaning: React.FC = () => {
                         className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
                         onChange={(e) => {
                           const strat = e.target.value as CleaningAction["payload"]["strategy"];
-                          if (!strat) return;
+                          if (!strat || strat === 'custom') return; // Custom is handled by the input field
                           handleAddAction({
                             type: "FILL_MISSING",
                             description: `Fill missing in '${name}' using ${strat}`,
@@ -807,27 +887,13 @@ const DataCleaning: React.FC = () => {
                         className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
-                            const val = (e.target as HTMLInputElement).value;
-                            if (val !== "") {
-                              handleAddAction({
-                                type: "FILL_MISSING",
-                                description: `Fill missing in '${name}' with "${val}"`,
-                                payload: { columnName: name, strategy: "custom", customValue: val },
-                              });
-                              (e.target as HTMLInputElement).value = "";
-                            }
+                            handleCustomFillSubmit((e.target as HTMLInputElement).value, name);
+                            (e.target as HTMLInputElement).value = "";
                           }
                         }}
                         onBlur={(e) => {
-                          const val = (e.target as HTMLInputElement).value;
-                          if (val !== "") {
-                            handleAddAction({
-                              type: "FILL_MISSING",
-                              description: `Fill missing in '${name}' with "${val}"`,
-                              payload: { columnName: name, strategy: "custom", customValue: val },
-                            });
-                            (e.target as HTMLInputElement).value = "";
-                          }
+                           handleCustomFillSubmit((e.target as HTMLInputElement).value, name);
+                           (e.target as HTMLInputElement).value = "";
                         }}
                       />
                     </div>
@@ -1009,31 +1075,18 @@ const DataCleaning: React.FC = () => {
                       <div className="col-span-3">
                         <input
                           type="number"
-                          min={0}
-                          max={10}
+                          min={0} max={10}
                           placeholder="Decimals"
                           className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
-                          onKeyDown={(e) => {
+                           onKeyDown={(e) => {
                             if (e.key === "Enter") {
-                              const places = Number((e.target as HTMLInputElement).value) || 0;
-                              handleAddAction({
-                                type: "NUMBER_ROUND",
-                                description: `Round '${name}' to ${places} decimals`,
-                                payload: { columnName: name, roundTo: places },
-                              });
-                              (e.target as HTMLInputElement).value = "";
+                                handleRoundSubmit((e.target as HTMLInputElement).value, name);
+                                (e.target as HTMLInputElement).value = "";
                             }
                           }}
                           onBlur={(e) => {
-                            const places = Number((e.target as HTMLInputElement).value);
-                            if (Number.isFinite(places)) {
-                              handleAddAction({
-                                type: "NUMBER_ROUND",
-                                description: `Round '${name}' to ${places} decimals`,
-                                payload: { columnName: name, roundTo: places },
-                              });
-                              (e.target as HTMLInputElement).value = "";
-                            }
+                            handleRoundSubmit((e.target as HTMLInputElement).value, name);
+                            (e.target as HTMLInputElement).value = "";
                           }}
                         />
                       </div>
@@ -1069,24 +1122,30 @@ const DataCleaning: React.FC = () => {
                           type="number"
                           placeholder="Out min (default 0)"
                           className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
-                          id={`scale-min-${name}`}
+                          value={scaleInputs[name]?.min ?? ''}
+                          onChange={(e) => setScaleInputs(s => ({...s, [name]: {...(s[name] ?? {max: ''}), min: e.target.value}}))}
                         />
                         <input
                           type="number"
                           placeholder="Out max (default 1)"
                           className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
-                          id={`scale-max-${name}`}
+                          value={scaleInputs[name]?.max ?? ''}
+                          onChange={(e) => setScaleInputs(s => ({...s, [name]: {...(s[name] ?? {min: ''}), max: e.target.value}}))}
                         />
                       </div>
                       <button
                         className="mt-2 w-full bg-purple-700/50 hover:bg-purple-600/50 text-white py-1.5 rounded text-sm"
                         onClick={() => {
-                          const minInput = document.getElementById(`scale-min-${name}`) as HTMLInputElement | null;
-                          const maxInput = document.getElementById(`scale-max-${name}`) as HTMLInputElement | null;
-                          const outMinRaw = minInput ? minInput.value : "0";
-                          const outMaxRaw = maxInput ? maxInput.value : "1";
+                          const isAlreadyScaled = actions.some(a => a.type === "NUMBER_SCALE" && a.payload.columnName === name);
+                          if (isAlreadyScaled) {
+                            toast.error(`A scaling rule for '${name}' already exists.`);
+                            return;
+                          }
+                          const outMinRaw = scaleInputs[name]?.min ?? "0";
+                          const outMaxRaw = scaleInputs[name]?.max ?? "1";
                           const outMin = outMinRaw === "" ? 0 : Number(outMinRaw);
                           const outMax = outMaxRaw === "" ? 1 : Number(outMaxRaw);
+                          
                           handleAddAction({
                             type: "NUMBER_SCALE",
                             description: `Scale '${name}' to [${outMin}, ${outMax}]`,
@@ -1096,8 +1155,7 @@ const DataCleaning: React.FC = () => {
                               scaleMax: Number.isFinite(outMax) ? outMax : 1,
                             },
                           });
-                          if (minInput) minInput.value = "";
-                          if (maxInput) maxInput.value = "";
+                          setScaleInputs(s => ({...s, [name]: {min: '', max: ''}}));
                         }}
                       >
                         Add Scale Step
