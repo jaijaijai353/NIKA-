@@ -17,7 +17,7 @@
 //   }
 //   setDataset: (next: typeof dataset) => void
 //
-// NOTE: This file is intentionally verbose with comments and whitespace for clarity, as requested.
+// NOTE: This file is intentionally verbose with comments and whitespace for clarity.
 // --------------------------------------------------------------------------------------------
 
 import React, {
@@ -112,7 +112,7 @@ export interface DatasetLike {
 /** Checks if a value is null/undefined/empty string. */
 const isNullish = (v: any): boolean => v === null || v === undefined || v === "";
 
-/** Formats numbers with Indian locale grouping. */
+/** Formats numbers with Indian locale grouping (e.g., 1,00,000). */
 const formatNumber = (v: number): string => new Intl.NumberFormat("en-IN").format(v);
 
 /** Parses strings like "1,234.56" or "$1,234" to a number. */
@@ -145,9 +145,6 @@ const median = (arr: number[]): number | null => {
   const mid = Math.floor(nums.length / 2);
   return nums.length % 2 === 0 ? (nums[mid - 1] + nums[mid]) / 2 : nums[mid];
 };
-
-/** Clamp helper for scaling. */
-const clamp = (n: number, minV: number, maxV: number) => Math.min(Math.max(n, minV), maxV);
 
 /** Safe string lower. */
 const lower = (v: any) => (v == null ? v : String(v).toLowerCase());
@@ -635,9 +632,6 @@ const DataCleaning: React.FC = () => {
       }
     }
 
-    // Build final stats and remove dropped columns (value === undefined)
-    // Also derive a flattened object array for CSV export
-
     const flattened = processed.map((row) => {
       const obj: Record<string, any> = {};
       for (const [k, cell] of Object.entries(row)) {
@@ -670,6 +664,15 @@ const DataCleaning: React.FC = () => {
     setActions((prev) => [...prev, newAction]);
   }, []);
 
+  // --------------------------------------------------------------------------------------
+  // PATCHED: handleApplyChanges
+  // This function is updated to prevent a crash when all data is filtered out.
+  // OLD BEHAVIOR: Inferred columns from the processed data. If data was empty, it
+  //               created `columns: []`, causing crashes in downstream components.
+  // NEW BEHAVIOR:  Calculates the new column list by taking the original columns and
+  //               subtracting any columns explicitly dropped in the 'actions' queue.
+  //               This is deterministic and safe, even if the final data is empty.
+  // --------------------------------------------------------------------------------------
   const handleApplyChanges = useCallback(() => {
     if (!originalDataset) return;
 
@@ -683,23 +686,27 @@ const DataCleaning: React.FC = () => {
       return out;
     });
 
-    // Rebuild columns from keys of the first row (or from original minus dropped)
-    const colSet = new Set<string>();
-    for (const r of finalCleanedData) {
-      for (const k of Object.keys(r)) colSet.add(k);
-    }
-    const nextColumns = Array.from(colSet).map((name) => ({ name }));
+    const droppedColumns = new Set<string>(
+      actions
+        .filter(action => action.type === 'DROP_COLUMN')
+        .map(action => action.payload.columnName!)
+        .filter(Boolean)
+    );
+
+    const nextColumns = originalDataset.columns.filter(
+      col => !droppedColumns.has(col.name)
+    );
 
     setDataset({ columns: nextColumns, data: finalCleanedData });
     setActions([]);
-  }, [preview, originalDataset, setDataset]);
+    
+  }, [preview, originalDataset, setDataset, actions]); // Added 'actions' to dependency array
 
   const handleReset = useCallback(() => setActions([]), []);
 
   const exportCSV = useCallback(() => {
     if (!originalDataset) return;
 
-    // Flatten current preview to plain objects
     const flattened = preview.data.map((row) => {
       const obj: Record<string, any> = {};
       for (const [k, cell] of Object.entries(row)) {
@@ -708,7 +715,6 @@ const DataCleaning: React.FC = () => {
       return obj;
     });
 
-    // Determine columns from preview or fallback to original columns
     const columnsFromPreview = new Set<string>();
     flattened.forEach((r) => Object.keys(r).forEach((k) => columnsFromPreview.add(k)));
     const headerCols = columnsFromPreview.size
@@ -743,7 +749,6 @@ const DataCleaning: React.FC = () => {
   // ==========================================================================================
   return (
     <div className="p-6 space-y-6">
-      {/* Header with counts and actions */}
       <Header
         onApply={handleApplyChanges}
         onReset={handleReset}
@@ -751,13 +756,10 @@ const DataCleaning: React.FC = () => {
         stats={preview.stats}
       />
 
-      {/* Pending Recipe Queue */}
       <PendingActionsQueue actions={actions} setActions={setActions} />
 
-      {/* Columns grid */}
       <LayoutGroup>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-6">
-          {/* COLUMN 1: Handle Missing Data */}
           <CleaningActionColumn
             title="Handle Missing Data"
             icon={AlertTriangle}
@@ -770,8 +772,6 @@ const DataCleaning: React.FC = () => {
               <p className="text-gray-400">
                 Choose a column and a fill strategy. For mean/median we use non-empty numeric values.
               </p>
-
-              {/* Per-column row */}
               <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1 custom-scroll">
                 {columnNames.map((name) => (
                   <div key={name} className="grid grid-cols-12 items-center gap-2 bg-gray-800/40 rounded-xl p-2">
@@ -780,7 +780,6 @@ const DataCleaning: React.FC = () => {
                         {name}
                       </span>
                     </div>
-
                     <div className="col-span-4">
                       <select
                         className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
@@ -802,7 +801,6 @@ const DataCleaning: React.FC = () => {
                         <option value="custom">Custom Value (use input)</option>
                       </select>
                     </div>
-
                     <div className="col-span-4">
                       <input
                         placeholder="Custom fill value"
@@ -839,7 +837,6 @@ const DataCleaning: React.FC = () => {
             </div>
           </CleaningActionColumn>
 
-          {/* COLUMN 2: Remove Duplicates */}
           <CleaningActionColumn
             title="Remove Duplicates"
             icon={Info}
@@ -852,7 +849,6 @@ const DataCleaning: React.FC = () => {
               <p className="text-sm text-gray-400">
                 This step will remove rows that are exact copies of another row across all visible columns.
               </p>
-
               <button
                 onClick={() =>
                   handleAddAction({
@@ -865,14 +861,12 @@ const DataCleaning: React.FC = () => {
               >
                 Add Duplicate Removal Step
               </button>
-
               <div className="text-xs text-gray-500">
                 Tip: Apply this step after finishing most other transforms to maximize effect.
               </div>
             </div>
           </CleaningActionColumn>
 
-          {/* COLUMN 3: Fix Data Types */}
           <CleaningActionColumn
             title="Fix Data Types"
             icon={Sparkles}
@@ -889,7 +883,6 @@ const DataCleaning: React.FC = () => {
                       {name}
                     </span>
                   </div>
-
                   <div className="col-span-7">
                     <select
                       onChange={(e) => {
@@ -917,7 +910,6 @@ const DataCleaning: React.FC = () => {
             </div>
           </CleaningActionColumn>
 
-          {/* COLUMN 4: Standardize Text */}
           <CleaningActionColumn
             title="Standardize Text"
             icon={Edit3}
@@ -930,7 +922,6 @@ const DataCleaning: React.FC = () => {
               <p className="text-sm text-gray-400">
                 Apply common text cleanups. Choose a column and an operation below.
               </p>
-
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
                 {columnNames.map((name) => (
                   <div key={name} className="bg-gray-800/40 rounded-xl p-3 space-y-2">
@@ -939,7 +930,6 @@ const DataCleaning: React.FC = () => {
                         {name}
                       </span>
                     </div>
-
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
@@ -953,7 +943,6 @@ const DataCleaning: React.FC = () => {
                       >
                         Trim
                       </button>
-
                       <button
                         className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
                         onClick={() =>
@@ -966,7 +955,6 @@ const DataCleaning: React.FC = () => {
                       >
                         Lowercase
                       </button>
-
                       <button
                         className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
                         onClick={() =>
@@ -979,7 +967,6 @@ const DataCleaning: React.FC = () => {
                       >
                         Uppercase
                       </button>
-
                       <button
                         className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
                         onClick={() =>
@@ -999,7 +986,6 @@ const DataCleaning: React.FC = () => {
             </div>
           </CleaningActionColumn>
 
-          {/* COLUMN 5: Normalize Numbers */}
           <CleaningActionColumn
             title="Normalize Numbers"
             icon={Sliders}
@@ -1012,8 +998,6 @@ const DataCleaning: React.FC = () => {
               <p className="text-sm text-gray-400">
                 Round to fixed decimals or scale values to a target range.
               </p>
-
-              {/* ROUNDING */}
               <div className="space-y-2">
                 <h4 className="text-xs uppercase tracking-wider text-gray-400">Round</h4>
                 <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
@@ -1071,11 +1055,8 @@ const DataCleaning: React.FC = () => {
                   ))}
                 </div>
               </div>
-
-              {/* SCALING */}
               <div className="space-y-2">
                 <h4 className="text-xs uppercase tracking-wider text-gray-400">Scale</h4>
-
                 <div className="space-y-3 max-h-[160px] overflow-y-auto pr-1">
                   {columnNames.map((name) => (
                     <div key={name} className="bg-gray-800/40 rounded-xl p-3">
@@ -1106,7 +1087,6 @@ const DataCleaning: React.FC = () => {
                           const outMaxRaw = maxInput ? maxInput.value : "1";
                           const outMin = outMinRaw === "" ? 0 : Number(outMinRaw);
                           const outMax = outMaxRaw === "" ? 1 : Number(outMaxRaw);
-
                           handleAddAction({
                             type: "NUMBER_SCALE",
                             description: `Scale '${name}' to [${outMin}, ${outMax}]`,
@@ -1129,7 +1109,6 @@ const DataCleaning: React.FC = () => {
             </div>
           </CleaningActionColumn>
 
-          {/* COLUMN 6: Drop Columns */}
           <CleaningActionColumn
             title="Drop Columns"
             icon={Trash2}
@@ -1159,7 +1138,6 @@ const DataCleaning: React.FC = () => {
         </div>
       </LayoutGroup>
 
-      {/* Live Preview Table */}
       <motion.div
         layout
         initial={{ opacity: 0 }}
@@ -1188,7 +1166,7 @@ const DataCleaning: React.FC = () => {
 
                     const displayValue = (v: any) => {
                       if (v === null || v === undefined) return <span className="text-gray-500 italic">null</span>;
-                      if (v instanceof Date) return v.toLocaleString();
+                      if (v instanceof Date) return v.toLocaleString('en-IN');
                       if (typeof v === 'boolean') return v ? 'true' : 'false';
                       return String(v);
                     };
