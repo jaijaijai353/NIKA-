@@ -1,13 +1,40 @@
 // src/components/DataCleaning.tsx
+// --------------------------------------------------------------------------------------------
 //
-// Full-fledged, detailed implementation of the Data Cleaning Workbench.
-// This single-file component is structured with child components for clarity and maintainability.
-// It features a non-destructive preview model driven by a "pending actions" queue,
-// advanced cleaning functions, and polished UI animations with Framer Motion.
-// Total line count: ~1300 lines.
+// Enhanced Data Cleaning Workbench (Full, non-condensed ~1200 lines)
+// - Independent collapsible cards laid out as true side-by-side columns
+// - Expanded toolset: Missing Data, Duplicates, Data Types, Standardize Text,
+//   Normalize Numbers, Drop Columns
+// - Action queue with drag-to-reorder and remove
+// - Live preview (top 100 rows), with change-highlighting and sticky header
+// - CSV export of the current preview
+// - Clean, modern UI using Tailwind + Framer Motion animations
+//
+// Assumptions about DataContext shape:
+//   dataset: {
+//     columns: Array<{ name: string }>,
+//     data: Array<Record<string, any>>
+//   }
+//   setDataset: (next: typeof dataset) => void
+//
+// NOTE: This file is intentionally verbose with comments and whitespace for clarity, as requested.
+// --------------------------------------------------------------------------------------------
 
-import React, { useState, useMemo, useEffect, useCallback } from "react";
-import { motion, AnimatePresence, Reorder } from "framer-motion";
+import React, {
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  Fragment,
+} from "react";
+
+import {
+  motion,
+  AnimatePresence,
+  Reorder,
+  LayoutGroup,
+} from "framer-motion";
+
 import {
   RectangleVertical as CleaningServices,
   AlertTriangle,
@@ -19,158 +46,205 @@ import {
   Download as DownloadIcon,
   Sparkles,
   Save,
-  PlusCircle,
-  CaseSensitive,
-  Replace,
   X,
   GripVertical,
+  ChevronDown,
+  Sliders,
+  Hash,
 } from "lucide-react";
+
 import { saveAs } from "file-saver";
+
 import { useDataContext } from "../context/DataContext";
 
-// -------------------------------------------------------------------------------- //
+// ============================================================================================
 // TYPE DEFINITIONS
-// -------------------------------------------------------------------------------- //
+// ============================================================================================
 
-/** Defines the structure for a single, re-orderable cleaning action in the queue. */
-interface CleaningAction {
+/** Describes all supported cleaning action types for the recipe queue. */
+export type CleaningActionType =
+  | "REMOVE_DUPLICATES"
+  | "FILL_MISSING"
+  | "CHANGE_TYPE"
+  | "DROP_COLUMN"
+  | "TRIM_WHITESPACE"
+  | "LOWERCASE"
+  | "UPPERCASE"
+  | "REMOVE_NON_ALPHANUM"
+  | "NUMBER_ROUND"
+  | "NUMBER_SCALE";
+
+/** Describes a queued cleaning action. */
+export interface CleaningAction {
   id: string;
-  type:
-    | "REMOVE_DUPLICATES"
-    | "FILL_MISSING"
-    | "CHANGE_TYPE"
-    | "FIND_REPLACE"
-    | "CHANGE_CASE"
-    | "TRIM_WHITESPACE";
+  type: CleaningActionType;
   description: string;
-  // Payload contains all configuration options for this specific action
   payload: {
-    // For per-column actions
     columnName?: string;
-    // For FILL_MISSING
-    strategy?: "mean" | "median" | "mode" | "custom" | "zero";
+    strategy?: "mean" | "median" | "custom" | "zero";
     customValue?: any;
-    // For CHANGE_TYPE
-    newType?: string;
-    currencyBase?: string;
-    currencyTarget?: string;
-    // For FIND_REPLACE
-    findText?: string;
-    replaceText?: string;
-    isRegex?: boolean;
-    isCaseSensitive?: boolean;
-    // For CHANGE_CASE
-    caseType?: "uppercase" | "lowercase" | "titlecase";
+    newType?: "Text" | "Integer" | "Float" | "Date" | "Boolean";
+    roundTo?: number; // for NUMBER_ROUND
+    scaleMin?: number; // for NUMBER_SCALE
+    scaleMax?: number; // for NUMBER_SCALE
   };
 }
 
-/** Represents a cell in the preview table, with metadata about its state. */
-interface PreviewCell {
+/** Cell preview structure with changed flag. */
+export interface PreviewCell {
   value: any;
-  originalValue: any;
   isChanged: boolean;
-  isError: boolean;
 }
 
-/** Represents a row in the preview table. */
-type PreviewRow = Record<string, PreviewCell>;
+/** Row of preview cells keyed by column name. */
+export type PreviewRow = Record<string, PreviewCell>;
 
-/** Defines the shape of props for the Header component. */
+/** Lightweight dataset typing expected from context. */
+export interface DatasetLike {
+  columns: Array<{ name: string }>;
+  data: Array<Record<string, any>>;
+}
+
+// ============================================================================================
+// UTILITY HELPERS
+// ============================================================================================
+
+/** Checks if a value is null/undefined/empty string. */
+const isNullish = (v: any): boolean => v === null || v === undefined || v === "";
+
+/** Formats numbers with Indian locale grouping. */
+const formatNumber = (v: number): string => new Intl.NumberFormat("en-IN").format(v);
+
+/** Parses strings like "1,234.56" or "$1,234" to a number. */
+const parseNumberLike = (v: any): number => {
+  if (v === null || v === undefined) return NaN;
+  if (typeof v === "number") return v;
+  const cleaned = String(v).replace(/[^0-9+\-\.eE]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+/** Converts unknown input to Date or null if invalid. */
+const toDateOrNull = (v: any): Date | null => {
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+/** Compute mean of numeric array (ignoring NaN). */
+const mean = (arr: number[]): number | null => {
+  const nums = arr.filter((n) => Number.isFinite(n));
+  if (!nums.length) return null;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+};
+
+/** Compute median of numeric array (ignoring NaN). */
+const median = (arr: number[]): number | null => {
+  const nums = arr.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+  if (!nums.length) return null;
+  const mid = Math.floor(nums.length / 2);
+  return nums.length % 2 === 0 ? (nums[mid - 1] + nums[mid]) / 2 : nums[mid];
+};
+
+/** Clamp helper for scaling. */
+const clamp = (n: number, minV: number, maxV: number) => Math.min(Math.max(n, minV), maxV);
+
+/** Safe string lower. */
+const lower = (v: any) => (v == null ? v : String(v).toLowerCase());
+
+/** Safe string upper. */
+const upper = (v: any) => (v == null ? v : String(v).toUpperCase());
+
+/** Safe string trim. */
+const trim = (v: any) => (v == null ? v : String(v).trim());
+
+/** Remove non alphanumeric (preserve spaces) */
+const removeNonAlphanum = (v: any) => (v == null ? v : String(v).replace(/[^\p{L}\p{N}\s]/gu, ""));
+
+/** Deep compare for duplicate detection by serializing stable values. */
+const stableKey = (row: Record<string, any>): string => {
+  const ordered: Record<string, any> = {};
+  for (const k of Object.keys(row).sort()) {
+    const val = row[k];
+    ordered[k] = val instanceof Date ? val.toISOString() : val;
+  }
+  return JSON.stringify(ordered);
+};
+
+/** CSV export from plain objects, escaping quotes. */
+const objectsToCSV = (rows: Array<Record<string, any>>, columns: string[]): string => {
+  const escape = (v: any) => {
+    if (v == null) return "";
+    const s = v instanceof Date ? v.toISOString() : String(v);
+    const needs = /[",\n]/.test(s);
+    return needs ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const header = columns.map(escape).join(",");
+  const lines = rows.map((r) => columns.map((c) => escape(r[c])).join(","));
+  return [header, ...lines].join("\n");
+};
+
+// ============================================================================================
+// CHILD: Header
+// ============================================================================================
+
 interface HeaderProps {
   onApply: () => void;
   onReset: () => void;
   onExport: () => void;
-  isProcessing: boolean;
-  hasPendingChanges: boolean;
+  stats: { missing: number; dups: number };
 }
 
-/** Defines props for the ActionCard component. */
-interface ActionCardProps {
-  title: string;
-  icon: React.ElementType;
-  value: number | string;
-  originalValue?: number | string;
-  colorClass: string;
-  onClick: () => void;
-}
-
-/** Defines props for a single row in the column settings panel. */
-interface ColumnRowProps {
-  column: { name: string; type?: string };
-  onAddAction: (actionType: CleaningAction['type'], payload: CleaningAction['payload']) => void;
-  previewValue: any;
-}
-
-// -------------------------------------------------------------------------------- //
-// UTILITY & HELPER FUNCTIONS
-// -------------------------------------------------------------------------------- //
-
-const isNullish = (value: any): boolean => value === null || value === undefined || value === "";
-
-const formatNumber = (val: number): string => new Intl.NumberFormat("en-IN").format(val);
-
-const formatCurrency = (val: number, currencyCode: string): string => {
-  try {
-    return new Intl.NumberFormat("en-IN", { style: "currency", currency: currencyCode }).format(val);
-  } catch (e) {
-    return `${currencyCode} ${val.toFixed(2)}`;
-  }
-};
-
-const parseNumberLike = (input: any): number => {
-  if (typeof input === "number") return input;
-  if (isNullish(input)) return NaN;
-  const str = String(input).replace(/[₹$,€£%\s,]/g, "");
-  return Number(str);
-};
-
-const toDateOrNull = (value: any): Date | null => {
-  if (value instanceof Date && !isNaN(value.getTime())) return value;
-  const d = new Date(value);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-const toDDMMYYYY = (d: Date | null): string => d ? `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}` : "-";
-
-const toTitleCase = (str: string): string => {
-  return str.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
-};
-
-// -------------------------------------------------------------------------------- //
-// CHILD COMPONENT: Header
-// -------------------------------------------------------------------------------- //
-
-/**
- * Renders the main header for the workbench, including title and primary action buttons.
- */
-const Header: React.FC<HeaderProps> = ({ onApply, onReset, onExport, isProcessing, hasPendingChanges }) => {
+const Header: React.FC<HeaderProps> = ({ onApply, onReset, onExport, stats }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-5 border border-gray-700 flex items-center justify-between"
+      transition={{ duration: 0.25 }}
+      className="bg-gray-800/60 backdrop-blur-sm rounded-2xl p-5 border border-gray-700 flex items-center justify-between sticky top-4 z-30 shadow-xl"
     >
       <div className="flex items-center space-x-4">
-        <CleaningServices className="h-9 w-9 text-blue-400" />
+        <CleaningServices className="h-10 w-10 text-blue-400" />
         <div>
           <h2 className="text-2xl font-bold text-white">Data Cleaning Workbench</h2>
-          <p className="text-gray-400 text-sm">Build a cleaning recipe and apply changes non-destructively.</p>
+          <p className="text-gray-400 text-sm">
+            Build a cleaning recipe below. Preview updates live.
+          </p>
         </div>
       </div>
+
+      <div className="hidden md:flex items-center space-x-6">
+        <div className="flex items-center space-x-2">
+          <AlertTriangle className="h-4 w-4 text-yellow-400" />
+          <span className="text-sm text-gray-300">Missing: {formatNumber(stats.missing)}</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <Info className="h-4 w-4 text-red-400" />
+          <span className="text-sm text-gray-300">Duplicates: {formatNumber(stats.dups)}</span>
+        </div>
+      </div>
+
       <div className="flex items-center space-x-3">
-        <button onClick={onReset} className="bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors">
+        <button
+          onClick={onReset}
+          className="bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded-xl flex items-center space-x-2 transition-colors"
+        >
           <RefreshCw size={16} />
           <span>Reset</span>
         </button>
+
         <button
           onClick={onApply}
-          disabled={!hasPendingChanges || isProcessing}
-          className="bg-green-600 hover:bg-green-500 text-white px-5 py-2 rounded-lg flex items-center space-x-2 font-bold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
+          className="bg-green-600 hover:bg-green-500 text-white px-5 py-2 rounded-xl flex items-center space-x-2 font-bold transition-colors"
         >
           <Save size={16} />
-          <span>{isProcessing ? 'Applying...' : 'Apply Changes'}</span>
+          <span>Apply Changes</span>
         </button>
-        <button onClick={onExport} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors">
+
+        <button
+          onClick={onExport}
+          className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl flex items-center space-x-2 transition-colors"
+        >
           <DownloadIcon size={16} />
           <span>Export CSV</span>
         </button>
@@ -179,487 +253,967 @@ const Header: React.FC<HeaderProps> = ({ onApply, onReset, onExport, isProcessin
   );
 };
 
-// -------------------------------------------------------------------------------- //
-// CHILD COMPONENT: ActionCard
-// -------------------------------------------------------------------------------- //
+// ============================================================================================
+// CHILD: CleaningActionColumn (collapsible card)
+// ============================================================================================
 
-/**
- * A reusable card to display a data quality metric (e.g., Missing Values, Duplicates).
- */
-const ActionCard: React.FC<ActionCardProps> = ({ title, icon: Icon, value, originalValue, colorClass, onClick }) => {
-  const hasChanged = originalValue !== undefined && value !== originalValue;
+interface CleaningActionColumnProps {
+  title: string;
+  icon: React.ElementType;
+  color: string;
+  isOpen: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  subtitle?: string;
+}
+
+const CleaningActionColumn: React.FC<CleaningActionColumnProps> = ({
+  title,
+  icon: Icon,
+  color,
+  isOpen,
+  onClick,
+  children,
+  subtitle,
+}) => {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      whileHover={{ scale: 1.03 }}
-      transition={{ type: "spring", stiffness: 300 }}
-      className={`rounded-xl p-6 border ${colorClass} bg-opacity-10 cursor-pointer h-full flex flex-col justify-between`}
-      onClick={onClick}
+      layout
+      className="bg-gradient-to-b from-gray-900/60 to-gray-900/20 rounded-2xl border border-gray-700 overflow-hidden hover:shadow-lg hover:shadow-black/30 transition-shadow"
     >
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <Icon className="h-7 w-7" />
-          <h3 className="text-lg font-semibold text-white">{title}</h3>
+      <motion.button
+        layoutId={`header-${title}`}
+        onClick={onClick}
+        className="w-full p-5 flex items-center justify-between cursor-pointer hover:bg-gray-700/20 transition-colors"
+      >
+        <div className="flex items-center space-x-3 text-left">
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-gray-800 border border-gray-700">
+            <Icon className={`h-6 w-6 ${color}`} />
+          </span>
+          <div>
+            <h3 className="text-lg font-semibold text-white">{title}</h3>
+            {subtitle ? (
+              <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>
+            ) : null}
+          </div>
         </div>
-        <div className="text-right">
-          <motion.span layout className="text-3xl font-bold block">{value}</motion.span>
-          {hasChanged && (
-            <motion.span
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-sm font-mono text-gray-400"
-            >
-              (was {originalValue})
-            </motion.span>
-          )}
-        </div>
-      </div>
-      <div className="bg-gray-700/50 hover:bg-gray-600/50 text-white px-4 py-2 rounded-lg text-sm text-center transition-colors">
-        Configure Actions
-      </div>
+
+        <motion.div
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ type: "spring", stiffness: 200, damping: 16 }}
+        >
+          <ChevronDown size={20} className="text-gray-400" />
+        </motion.div>
+      </motion.button>
+
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            key="content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1, transition: { opacity: { delay: 0.08 } } }}
+            exit={{ height: 0, opacity: 0 }}
+            className="px-5 pb-5"
+          >
+            <div className="border-t border-gray-700 pt-4">
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };
 
-// -------------------------------------------------------------------------------- //
-// CHILD COMPONENT: PendingActionsQueue
-// -------------------------------------------------------------------------------- //
+// ============================================================================================
+// CHILD: PendingActionsQueue (draggable list of steps)
+// ============================================================================================
 
-/**
- * Displays the list of currently configured cleaning actions, allowing reordering and removal.
- */
-const PendingActionsQueue: React.FC<{
+interface PendingActionsQueueProps {
   actions: CleaningAction[];
   setActions: React.Dispatch<React.SetStateAction<CleaningAction[]>>;
-}> = ({ actions, setActions }) => {
-  const removeAction = (id: string) => {
-    setActions(actions.filter(a => a.id !== id));
-  };
+}
+
+const PendingActionsQueue: React.FC<PendingActionsQueueProps> = ({ actions, setActions }) => {
+  if (actions.length === 0) return null;
 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="p-5 bg-gray-900/40 rounded-xl border border-gray-700 h-full"
+      className="p-5 bg-gray-900/50 rounded-2xl border border-gray-700 shadow-inner"
     >
-      <h3 className="font-semibold text-white mb-3 text-lg">Cleaning Recipe</h3>
-      {actions.length === 0 ? (
-        <div className="text-center text-gray-400 text-sm py-10">
-          <p>No cleaning steps added yet.</p>
-          <p>Click a card on the left to get started.</p>
-        </div>
-      ) : (
-        <Reorder.Group axis="y" values={actions} onReorder={setActions} className="space-y-2">
-          <AnimatePresence>
-            {actions.map((action, index) => (
-              <Reorder.Item
-                key={action.id}
-                value={action}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, x: -50 }}
-                transition={{ duration: 0.2 }}
-                className="flex items-center justify-between bg-gray-700/50 p-3 rounded-lg cursor-grab active:cursor-grabbing"
-              >
-                <div className="flex items-center space-x-3">
-                  <GripVertical size={18} className="text-gray-500" />
-                  <span className="font-mono text-xs text-blue-300 bg-blue-900/50 px-2 py-1 rounded">{index + 1}</span>
-                  <p className="text-sm text-gray-200">{action.description}</p>
-                </div>
-                <button
-                  onClick={() => removeAction(action.id)}
-                  className="p-1 rounded-full hover:bg-red-500/20"
-                >
-                  <X size={16} className="text-red-400" />
-                </button>
-              </Reorder.Item>
-            ))}
-          </AnimatePresence>
-        </Reorder.Group>
-      )}
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-white text-lg">Cleaning Recipe ({actions.length} steps)</h3>
+        <span className="text-xs text-gray-400">Drag to reorder</span>
+      </div>
+
+      <Reorder.Group axis="y" values={actions} onReorder={setActions} className="space-y-2">
+        {actions.map((action, index) => (
+          <Reorder.Item
+            key={action.id}
+            value={action}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.18 }}
+            className="flex items-center justify-between bg-gray-700/50 p-3 rounded-xl cursor-grab active:cursor-grabbing"
+          >
+            <div className="flex items-center space-x-3">
+              <GripVertical size={18} className="text-gray-500" />
+              <span className="font-mono text-xs text-blue-300 bg-blue-900/50 px-2 py-1 rounded">
+                {index + 1}
+              </span>
+              <p className="text-sm text-gray-200">{action.description}</p>
+            </div>
+
+            <button
+              onClick={() => setActions(actions.filter((a) => a.id !== action.id))}
+              className="p-1 rounded-full hover:bg-red-500/20"
+              aria-label="Remove step"
+              title="Remove step"
+            >
+              <X size={16} className="text-red-400" />
+            </button>
+          </Reorder.Item>
+        ))}
+      </Reorder.Group>
     </motion.div>
   );
 };
 
-// -------------------------------------------------------------------------------- //
-// CHILD COMPONENT: ColumnRow (and its sub-panels)
-// -------------------------------------------------------------------------------- //
-
-/**
- * Represents a single row in the "Configure Actions" panel, providing controls for one column.
- */
-const ColumnRow: React.FC<ColumnRowProps> = ({ column, onAddAction, previewValue }) => {
-  const [panel, setPanel] = useState<string | null>(null);
-
-  const addActionAndClose = (type: CleaningAction['type'], payload: CleaningAction['payload'], description: string) => {
-    onAddAction(type, { ...payload, columnName: column.name }, description);
-    setPanel(null);
-  };
-  
-  const renderPanel = () => {
-    switch (panel) {
-        case 'FILL_MISSING':
-            return <FillMissingPanel column={column} onApply={addActionAndClose} />;
-        case 'FIND_REPLACE':
-            return <FindReplacePanel column={column} onApply={addActionAndClose} />;
-        case 'CHANGE_CASE':
-            return <ChangeCasePanel column={column} onApply={addActionAndClose} />;
-        default:
-            return null;
-    }
-  };
-
-  return (
-    <motion.div layout className="bg-gray-800/60 p-4 rounded-lg border border-gray-700">
-        <div className="grid grid-cols-12 gap-4 items-center">
-            <div className="col-span-3 font-medium text-gray-200 truncate" title={column.name}>{column.name}</div>
-            <div className="col-span-3 flex space-x-2">
-                <button onClick={() => setPanel('FILL_MISSING')} className="text-xs bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded">Fill Missing</button>
-                <button onClick={() => setPanel('FIND_REPLACE')} className="text-xs bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded">Replace</button>
-                <button onClick={() => setPanel('CHANGE_CASE')} className="text-xs bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded">Case</button>
-            </div>
-            <div className="col-span-3">
-                <select 
-                    className="bg-gray-700 text-white px-2 py-1.5 rounded w-full text-sm"
-                    onChange={(e) => addActionAndClose('CHANGE_TYPE', { newType: e.target.value }, `Change type of '${column.name}' to ${e.target.value}`)}
-                >
-                    <option>Change Type...</option>
-                    <option value="Text">Text</option>
-                    <option value="Integer">Integer</option>
-                    <option value="Float">Float</option>
-                    <option value="Date">Date</option>
-                    <option value="Boolean">Boolean</option>
-                </select>
-            </div>
-            <div className="col-span-3 bg-gray-900/70 text-gray-300 px-3 py-1.5 rounded text-sm truncate" title={String(previewValue)}>
-              {String(previewValue)}
-            </div>
-        </div>
-        <AnimatePresence>
-            {panel && (
-                <motion.div initial={{opacity: 0, height: 0}} animate={{opacity: 1, height: 'auto'}} exit={{opacity: 0, height: 0}} className="mt-4 pt-4 border-t border-gray-700">
-                    {renderPanel()}
-                </motion.div>
-            )}
-        </AnimatePresence>
-    </motion.div>
-  );
-};
-
-const FillMissingPanel: React.FC<{column: any, onApply: Function}> = ({column, onApply}) => {
-    const [strategy, setStrategy] = useState('custom');
-    const [customValue, setCustomValue] = useState('');
-    return (
-        <div>
-            <h5 className="text-sm font-semibold mb-2 text-blue-300">Fill Missing Values in '{column.name}'</h5>
-            <div className="flex items-end space-x-2">
-                 <select value={strategy} onChange={e => setStrategy(e.target.value)} className="bg-gray-600 text-sm p-2 rounded w-1/3">
-                    <option value="custom">Custom Value</option>
-                    <option value="mean">Mean</option>
-                    <option value="median">Median</option>
-                 </select>
-                 {strategy === 'custom' && <input value={customValue} onChange={e => setCustomValue(e.target.value)} placeholder="Enter value" className="bg-gray-600 text-sm p-2 rounded w-1/3"/>}
-                 <button onClick={() => onApply('FILL_MISSING', {strategy, customValue}, `Fill missing in '${column.name}' with ${strategy}`)} className="bg-blue-600 hover:bg-blue-500 text-sm px-4 py-2 rounded">Add Action</button>
-            </div>
-        </div>
-    );
-}
-const FindReplacePanel: React.FC<{column: any, onApply: Function}> = ({column, onApply}) => {
-    const [find, setFind] = useState('');
-    const [replace, setReplace] = useState('');
-    return (
-        <div>
-            <h5 className="text-sm font-semibold mb-2 text-green-300">Find & Replace in '{column.name}'</h5>
-            <div className="flex items-end space-x-2">
-                 <input value={find} onChange={e => setFind(e.target.value)} placeholder="Find text" className="bg-gray-600 text-sm p-2 rounded w-1/3"/>
-                 <input value={replace} onChange={e => setReplace(e.target.value)} placeholder="Replace with" className="bg-gray-600 text-sm p-2 rounded w-1/3"/>
-                 <button onClick={() => onApply('FIND_REPLACE', {findText: find, replaceText: replace}, `Replace '${find}' with '${replace}' in '${column.name}'`)} className="bg-green-600 hover:bg-green-500 text-sm px-4 py-2 rounded">Add Action</button>
-            </div>
-        </div>
-    );
-}
-const ChangeCasePanel: React.FC<{column: any, onApply: Function}> = ({column, onApply}) => {
-    const [caseType, setCaseType] = useState('uppercase');
-    return (
-        <div>
-            <h5 className="text-sm font-semibold mb-2 text-yellow-300">Change Case in '{column.name}'</h5>
-            <div className="flex items-end space-x-2">
-                <select value={caseType} onChange={e => setCaseType(e.target.value)} className="bg-gray-600 text-sm p-2 rounded w-1/3">
-                    <option value="uppercase">UPPERCASE</option>
-                    <option value="lowercase">lowercase</option>
-                    <option value="titlecase">Title Case</option>
-                 </select>
-                 <button onClick={() => onApply('CHANGE_CASE', {caseType}, `Change case of '${column.name}' to ${caseType}`)} className="bg-yellow-500 hover:bg-yellow-400 text-sm px-4 py-2 rounded">Add Action</button>
-            </div>
-        </div>
-    );
-}
-// -------------------------------------------------------------------------------- //
-// MAIN WORKBENCH COMPONENT
-// -------------------------------------------------------------------------------- //
+// ============================================================================================
+// MAIN: DataCleaning
+// ============================================================================================
 
 const DataCleaning: React.FC = () => {
-  const { dataset: originalDataset, setDataset } = useDataContext();
+  // -------------------------------------------------------------
+  // Context: dataset and setter
+  // -------------------------------------------------------------
+  const { dataset: originalDataset, setDataset } = useDataContext() as {
+    dataset: DatasetLike | null;
+    setDataset: (next: DatasetLike) => void;
+  };
 
-  // --- STATE MANAGEMENT ---
+  // -------------------------------------------------------------
+  // Local UI state
+  // -------------------------------------------------------------
   const [actions, setActions] = useState<CleaningAction[]>([]);
-  const [activePanel, setActivePanel] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [toast, setToast] = useState<{ open: boolean; text: string; tone: "ok" | "warn" }>({ open: false, text: "", tone: "ok" });
-  
-  // --- DERIVED STATE & MEMOS ---
 
-  /**
-   * The core of the workbench. This massive useMemo hook generates a non-destructive
-   * preview of the dataset by applying all pending actions in sequence.
-   * It also tracks which cells were changed for UI highlighting.
-   */
-  const previewData = useMemo<{ data: PreviewRow[], stats: any }>(() => {
-    if (!originalDataset) return { data: [], stats: {} };
+  const [openColumns, setOpenColumns] = useState({
+    missing: true,
+    duplicates: false,
+    types: false,
+    text: false,
+    numbers: false,
+    dropCols: false,
+  });
 
-    console.time("Preview Generation");
+  const toggleColumn = (key: keyof typeof openColumns) => {
+    setOpenColumns((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
-    // Initialize preview data with metadata
-    let processedData: PreviewRow[] = originalDataset.data.map(row => {
-      const previewRow: PreviewRow = {};
-      for (const key in row) {
-        previewRow[key] = { value: row[key], originalValue: row[key], isChanged: false, isError: false };
+  // -------------------------------------------------------------
+  // Derived: preview rows + stats
+  // -------------------------------------------------------------
+  const preview = useMemo(() => {
+    if (!originalDataset) return { data: [] as PreviewRow[], stats: { missing: 0, dups: 0 } };
+
+    // Build PreviewRow array from original
+    let processed: PreviewRow[] = originalDataset.data.map((row) => {
+      const pr: PreviewRow = {};
+      for (const key of Object.keys(row)) {
+        pr[key] = { value: row[key], isChanged: false };
       }
-      return previewRow;
+      return pr;
     });
 
-    // Apply each action in the queue sequentially
-    for (const action of actions) {
-        processedData = processedData.map(row => {
-            const newRow = {...row};
-            const colName = action.payload.columnName;
-            const cell = colName ? newRow[colName] : null;
-
-            if (action.type === 'REMOVE_DUPLICATES') { /* Handled separately below */ }
-            
-            if (cell) {
-                const originalValue = cell.originalValue;
-                let currentValue = cell.value;
-                let newValue = currentValue;
-                
-                switch (action.type) {
-                    case 'FILL_MISSING':
-                        if (isNullish(currentValue)) {
-                            // Simplified logic for demo, would need stats calculation
-                            newValue = action.payload.customValue ?? 0;
-                        }
-                        break;
-                    case 'CHANGE_TYPE':
-                        // Simplified type coercion
-                        if(action.payload.newType === 'Integer') newValue = Math.trunc(parseNumberLike(currentValue));
-                        else if(action.payload.newType === 'Float') newValue = parseNumberLike(currentValue);
-                        else if(action.payload.newType === 'Text') newValue = String(currentValue);
-                        break;
-                    case 'FIND_REPLACE':
-                        if (typeof currentValue === 'string') {
-                            const find = action.payload.findText || '';
-                            const replace = action.payload.replaceText || '';
-                            newValue = currentValue.replaceAll(find, replace);
-                        }
-                        break;
-                    case 'CHANGE_CASE':
-                        if (typeof currentValue === 'string') {
-                            if (action.payload.caseType === 'uppercase') newValue = currentValue.toUpperCase();
-                            else if (action.payload.caseType === 'lowercase') newValue = currentValue.toLowerCase();
-                            else if (action.payload.caseType === 'titlecase') newValue = toTitleCase(currentValue);
-                        }
-                        break;
-                }
-
-                newRow[colName] = { ...cell, value: newValue, isChanged: cell.isChanged || newValue !== currentValue };
-            }
-            return newRow;
-        });
-    }
-
-    // Handle actions that affect entire rows, like duplicate removal
-    if (actions.some(a => a.type === 'REMOVE_DUPLICATES')) {
-      const seen = new Set<string>();
-      processedData = processedData.filter(row => {
-        const simplifiedRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v.value]));
-        const serialized = JSON.stringify(simplifiedRow);
-        return seen.has(serialized) ? false : (seen.add(serialized), true);
-      });
-    }
-
-    // Calculate stats for the preview
-    const finalDataForStats = processedData.map(row => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v.value])));
-    const missingCount = finalDataForStats.reduce((sum, row) => sum + Object.values(row).filter(isNullish).length, 0);
-    const duplicates = finalDataForStats.length - new Set(finalDataForStats.map(r => JSON.stringify(r))).size;
-
-    console.timeEnd("Preview Generation");
-    
-    return {
-      data: processedData,
-      stats: {
-        missingValues: missingCount,
-        duplicates: duplicates,
-        totalRows: processedData.length
-      }
+    // Helper for marking cell changes
+    const setCell = (r: PreviewRow, key: string, nextVal: any) => {
+      const prev = r[key]?.value;
+      const changed = !(prev === nextVal || (prev instanceof Date && nextVal instanceof Date && prev.getTime() === nextVal.getTime()));
+      r[key] = { value: nextVal, isChanged: r[key]?.isChanged || changed };
     };
+
+    // For strategies that need column stats (e.g., mean/median), precompute per-column numeric arrays
+    const numericCache: Record<string, number[]> = {};
+
+    const ensureNumericCache = (col: string) => {
+      if (numericCache[col]) return numericCache[col];
+      const arr = processed.map((r) => parseNumberLike(r[col]?.value));
+      numericCache[col] = arr;
+      return arr;
+    };
+
+    // Apply actions in order
+    for (const action of actions) {
+      switch (action.type) {
+        case "REMOVE_DUPLICATES": {
+          const seen = new Set<string>();
+          processed = processed.filter((row) => {
+            const obj = Object.fromEntries(
+              Object.entries(row).map(([k, c]) => [k, c.value])
+            );
+            const key = stableKey(obj);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          break;
+        }
+
+        case "FILL_MISSING": {
+          const col = action.payload.columnName!;
+          const strat = action.payload.strategy || "zero";
+
+          // compute replacement once per action
+          let replacement: any = 0;
+          if (strat === "custom") {
+            replacement = action.payload.customValue;
+          } else if (strat === "zero") {
+            replacement = 0;
+          } else if (strat === "mean") {
+            const nums = ensureNumericCache(col);
+            const m = mean(nums);
+            replacement = m ?? 0;
+          } else if (strat === "median") {
+            const nums = ensureNumericCache(col);
+            const m = median(nums);
+            replacement = m ?? 0;
+          }
+
+          processed = processed.map((row) => {
+            const cell = row[col];
+            if (!cell || !isNullish(cell.value)) return row;
+            const copy = { ...row };
+            setCell(copy, col, replacement);
+            return copy;
+          });
+          break;
+        }
+
+        case "CHANGE_TYPE": {
+          const col = action.payload.columnName!;
+          const t = action.payload.newType!;
+
+          processed = processed.map((row) => {
+            const cell = row[col];
+            if (!cell) return row;
+
+            let nextVal: any = cell.value;
+
+            if (t === "Integer") {
+              const n = parseNumberLike(nextVal);
+              nextVal = Number.isFinite(n) ? Math.trunc(n) : null;
+            } else if (t === "Float") {
+              const n = parseNumberLike(nextVal);
+              nextVal = Number.isFinite(n) ? n : null;
+            } else if (t === "Text") {
+              nextVal = nextVal == null ? "" : String(nextVal);
+            } else if (t === "Boolean") {
+              const s = String(nextVal).toLowerCase();
+              nextVal = ["true", "1", "yes", "y"].includes(s);
+            } else if (t === "Date") {
+              nextVal = toDateOrNull(nextVal);
+            }
+
+            const copy = { ...row };
+            setCell(copy, col, nextVal);
+            return copy;
+          });
+          break;
+        }
+
+        case "DROP_COLUMN": {
+          const col = action.payload.columnName!;
+          processed = processed.map((row) => {
+            const copy: PreviewRow = { ...row };
+            // Indicate deletion by setting to undefined; we will omit at the end
+            if (copy[col]) {
+              copy[col] = { value: undefined, isChanged: true };
+            }
+            return copy;
+          });
+          break;
+        }
+
+        case "TRIM_WHITESPACE": {
+          const col = action.payload.columnName!;
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            if (v == null) return row;
+            const nv = trim(v);
+            if (nv === v) return row;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "LOWERCASE": {
+          const col = action.payload.columnName!;
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            if (v == null) return row;
+            const nv = lower(v);
+            if (nv === v) return row;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "UPPERCASE": {
+          const col = action.payload.columnName!;
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            if (v == null) return row;
+            const nv = upper(v);
+            if (nv === v) return row;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "REMOVE_NON_ALPHANUM": {
+          const col = action.payload.columnName!;
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            if (v == null) return row;
+            const nv = removeNonAlphanum(v);
+            if (nv === v) return row;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "NUMBER_ROUND": {
+          const col = action.payload.columnName!;
+          const places = action.payload.roundTo ?? 0;
+          const factor = Math.pow(10, places);
+
+          processed = processed.map((row) => {
+            const v = parseNumberLike(row[col]?.value);
+            if (!Number.isFinite(v)) return row;
+            const nv = Math.round(v * factor) / factor;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "NUMBER_SCALE": {
+          const col = action.payload.columnName!;
+          const nums = processed.map((r) => parseNumberLike(r[col]?.value));
+          const finite = nums.filter((n) => Number.isFinite(n)) as number[];
+          if (!finite.length) break;
+          const min = Math.min(...finite);
+          const max = Math.max(...finite);
+          const outMin = action.payload.scaleMin ?? 0;
+          const outMax = action.payload.scaleMax ?? 1;
+
+          processed = processed.map((row) => {
+            const v = parseNumberLike(row[col]?.value);
+            if (!Number.isFinite(v)) return row;
+            const t = max === min ? 0 : (v - min) / (max - min);
+            const nv = outMin + t * (outMax - outMin);
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    // Build final stats and remove dropped columns (value === undefined)
+    // Also derive a flattened object array for CSV export
+
+    const flattened = processed.map((row) => {
+      const obj: Record<string, any> = {};
+      for (const [k, cell] of Object.entries(row)) {
+        if (cell?.value !== undefined) {
+          obj[k] = cell.value;
+        }
+      }
+      return obj;
+    });
+
+    const missing = flattened.reduce(
+      (sum, row) => sum + Object.values(row).filter(isNullish).length,
+      0
+    );
+
+    const dups = flattened.length - new Set(flattened.map((r) => stableKey(r))).size;
+
+    return { data: processed, stats: { missing, dups } };
   }, [originalDataset, actions]);
 
-  const originalStats = useMemo(() => {
-    if (!originalDataset) return { missingValues: 0, duplicates: 0, totalRows: 0 };
-    const missing = originalDataset.data.reduce((sum, row) => sum + Object.values(row).filter(isNullish).length, 0);
-    const dups = originalDataset.data.length - new Set(originalDataset.data.map(r => JSON.stringify(r))).size;
-    return { missingValues: missing, duplicates: dups, totalRows: originalDataset.data.length };
-  }, [originalDataset]);
+  // -------------------------------------------------------------
+  // Handlers
+  // -------------------------------------------------------------
 
-  // --- HANDLERS ---
-  const handleAddAction = useCallback((type: CleaningAction['type'], payload: CleaningAction['payload'], description: string) => {
+  const handleAddAction = useCallback((action: Omit<CleaningAction, "id">) => {
     const newAction: CleaningAction = {
+      ...action,
       id: `${Date.now()}-${Math.random()}`,
-      type,
-      payload,
-      description,
     };
-    setActions(prev => [...prev, newAction]);
-    setToast({ open: true, text: `Added step: ${description}`, tone: "ok" });
+    setActions((prev) => [...prev, newAction]);
   }, []);
 
   const handleApplyChanges = useCallback(() => {
-    setIsProcessing(true);
-    setTimeout(() => { // Simulate processing time
-      const finalCleanedData = previewData.data.map(row => 
-        Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v.value]))
-      );
-      setDataset({
-        ...originalDataset!,
-        data: finalCleanedData,
-      });
-      setActions([]);
-      setIsProcessing(false);
-      setToast({ open: true, text: "Dataset updated successfully!", tone: "ok" });
-    }, 1000);
-  }, [previewData, originalDataset, setDataset]);
+    if (!originalDataset) return;
 
-  const handleReset = useCallback(() => {
-    setActions([]);
-    setToast({ open: true, text: "Cleaning recipe has been cleared.", tone: "warn" });
-  }, []);
-  
-  const exportCSV = useCallback(() => {
-    // ... export logic from previous example ...
-    console.log("Exporting CSV...");
-  }, []);
+    const finalCleanedData = preview.data.map((row) => {
+      const out: Record<string, any> = {};
+      for (const [k, cell] of Object.entries(row)) {
+        if (cell.value !== undefined) {
+          out[k] = cell.value;
+        }
+      }
+      return out;
+    });
 
-  useEffect(() => {
-    if (toast.open) {
-      const timer = setTimeout(() => setToast({ open: false, text: '', tone: 'ok' }), 3000);
-      return () => clearTimeout(timer);
+    // Rebuild columns from keys of the first row (or from original minus dropped)
+    const colSet = new Set<string>();
+    for (const r of finalCleanedData) {
+      for (const k of Object.keys(r)) colSet.add(k);
     }
-  }, [toast.open]);
+    const nextColumns = Array.from(colSet).map((name) => ({ name }));
+
+    setDataset({ columns: nextColumns, data: finalCleanedData });
+    setActions([]);
+  }, [preview, originalDataset, setDataset]);
+
+  const handleReset = useCallback(() => setActions([]), []);
+
+  const exportCSV = useCallback(() => {
+    if (!originalDataset) return;
+
+    // Flatten current preview to plain objects
+    const flattened = preview.data.map((row) => {
+      const obj: Record<string, any> = {};
+      for (const [k, cell] of Object.entries(row)) {
+        if (cell.value !== undefined) obj[k] = cell.value;
+      }
+      return obj;
+    });
+
+    // Determine columns from preview or fallback to original columns
+    const columnsFromPreview = new Set<string>();
+    flattened.forEach((r) => Object.keys(r).forEach((k) => columnsFromPreview.add(k)));
+    const headerCols = columnsFromPreview.size
+      ? Array.from(columnsFromPreview)
+      : originalDataset.columns.map((c) => c.name);
+
+    const csv = objectsToCSV(flattened, headerCols);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    saveAs(blob, `cleaned_dataset_${Date.now()}.csv`);
+  }, [originalDataset, preview]);
+
+  // -------------------------------------------------------------
+  // Guard: No dataset loaded
+  // -------------------------------------------------------------
 
   if (!originalDataset) {
-    return <div className="p-10 text-center text-gray-400">Loading dataset...</div>;
+    return (
+      <div className="p-10 text-center text-gray-400">
+        Loading dataset...
+      </div>
+    );
   }
-  
-  // --- RENDER ---
+
+  // Convenience shorthands
+  const columnNames = originalDataset.columns.map((c) => c.name);
+  const previewColumns = originalDataset.columns
+    .map((c) => c.name)
+    .filter((name) => preview.data[0]?.[name]?.value !== undefined);
+
+  // ==========================================================================================
+  // RENDER
+  // ==========================================================================================
   return (
     <div className="p-6 space-y-6">
-      <Header 
+      {/* Header with counts and actions */}
+      <Header
         onApply={handleApplyChanges}
         onReset={handleReset}
         onExport={exportCSV}
-        isProcessing={isProcessing}
-        hasPendingChanges={actions.length > 0}
+        stats={preview.stats}
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <ActionCard 
-                    title="Missing Values" 
-                    icon={AlertTriangle} 
-                    value={formatNumber(previewData.stats.missingValues)}
-                    originalValue={formatNumber(originalStats.missingValues)}
-                    colorClass="border-yellow-500 text-yellow-300 bg-yellow-900"
-                    onClick={() => setActivePanel('columns')}
-                />
-                 <ActionCard 
-                    title="Duplicate Rows" 
-                    icon={Info} 
-                    value={formatNumber(previewData.stats.duplicates)}
-                    originalValue={formatNumber(originalStats.duplicates)}
-                    colorClass="border-red-500 text-red-300 bg-red-900"
-                    onClick={() => handleAddAction('REMOVE_DUPLICATES', {}, 'Remove all duplicate rows')}
-                />
+      {/* Pending Recipe Queue */}
+      <PendingActionsQueue actions={actions} setActions={setActions} />
+
+      {/* Columns grid */}
+      <LayoutGroup>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-6">
+          {/* COLUMN 1: Handle Missing Data */}
+          <CleaningActionColumn
+            title="Handle Missing Data"
+            icon={AlertTriangle}
+            color="text-yellow-400"
+            isOpen={openColumns.missing}
+            onClick={() => toggleColumn("missing")}
+            subtitle="Fill null/empty values using rules"
+          >
+            <div className="text-sm text-gray-300 space-y-4">
+              <p className="text-gray-400">
+                Choose a column and a fill strategy. For mean/median we use non-empty numeric values.
+              </p>
+
+              {/* Per-column row */}
+              <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1 custom-scroll">
+                {columnNames.map((name) => (
+                  <div key={name} className="grid grid-cols-12 items-center gap-2 bg-gray-800/40 rounded-xl p-2">
+                    <div className="col-span-4">
+                      <span className="font-medium text-gray-200 truncate block" title={name}>
+                        {name}
+                      </span>
+                    </div>
+
+                    <div className="col-span-4">
+                      <select
+                        className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
+                        onChange={(e) => {
+                          const strat = e.target.value as CleaningAction["payload"]["strategy"];
+                          if (!strat) return;
+                          handleAddAction({
+                            type: "FILL_MISSING",
+                            description: `Fill missing in '${name}' using ${strat}`,
+                            payload: { columnName: name, strategy: strat },
+                          });
+                          e.currentTarget.selectedIndex = 0;
+                        }}
+                      >
+                        <option value="">Select strategy…</option>
+                        <option value="zero">Zero</option>
+                        <option value="mean">Mean</option>
+                        <option value="median">Median</option>
+                        <option value="custom">Custom Value (use input)</option>
+                      </select>
+                    </div>
+
+                    <div className="col-span-4">
+                      <input
+                        placeholder="Custom fill value"
+                        className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            const val = (e.target as HTMLInputElement).value;
+                            if (val !== "") {
+                              handleAddAction({
+                                type: "FILL_MISSING",
+                                description: `Fill missing in '${name}' with "${val}"`,
+                                payload: { columnName: name, strategy: "custom", customValue: val },
+                              });
+                              (e.target as HTMLInputElement).value = "";
+                            }
+                          }
+                        }}
+                        onBlur={(e) => {
+                          const val = (e.target as HTMLInputElement).value;
+                          if (val !== "") {
+                            handleAddAction({
+                              type: "FILL_MISSING",
+                              description: `Fill missing in '${name}' with "${val}"`,
+                              payload: { columnName: name, strategy: "custom", customValue: val },
+                            });
+                            (e.target as HTMLInputElement).value = "";
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            {/* Main Configuration Panel */}
-            <motion.div layout>
-                <h3 className="text-xl font-semibold text-white mb-3">Configure Actions</h3>
-                <div className="space-y-3 p-4 bg-gray-900/40 rounded-xl border border-gray-700 max-h-[450px] overflow-y-auto">
-                    {originalDataset.columns.map((col: any) => (
-                        <ColumnRow 
-                            key={col.name}
-                            column={col}
-                            onAddAction={handleAddAction}
-                            previewValue={previewData.data[0]?.[col.name]?.value ?? '-'}
-                        />
-                    ))}
+          </CleaningActionColumn>
+
+          {/* COLUMN 2: Remove Duplicates */}
+          <CleaningActionColumn
+            title="Remove Duplicates"
+            icon={Info}
+            color="text-red-400"
+            isOpen={openColumns.duplicates}
+            onClick={() => toggleColumn("duplicates")}
+            subtitle="Drop exact duplicate rows"
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-gray-400">
+                This step will remove rows that are exact copies of another row across all visible columns.
+              </p>
+
+              <button
+                onClick={() =>
+                  handleAddAction({
+                    type: "REMOVE_DUPLICATES",
+                    description: "Remove duplicate rows",
+                    payload: {},
+                  })
+                }
+                className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold py-2 rounded-xl transition-colors"
+              >
+                Add Duplicate Removal Step
+              </button>
+
+              <div className="text-xs text-gray-500">
+                Tip: Apply this step after finishing most other transforms to maximize effect.
+              </div>
+            </div>
+          </CleaningActionColumn>
+
+          {/* COLUMN 3: Fix Data Types */}
+          <CleaningActionColumn
+            title="Fix Data Types"
+            icon={Sparkles}
+            color="text-blue-400"
+            isOpen={openColumns.types}
+            onClick={() => toggleColumn("types")}
+            subtitle="Convert columns to the correct type"
+          >
+            <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+              {columnNames.map((name) => (
+                <div key={name} className="grid grid-cols-12 gap-2 items-center bg-gray-800/40 rounded-xl p-2">
+                  <div className="col-span-5">
+                    <span className="font-medium text-gray-200 text-sm truncate block" title={name}>
+                      {name}
+                    </span>
+                  </div>
+
+                  <div className="col-span-7">
+                    <select
+                      onChange={(e) => {
+                        const newType = e.target.value as CleaningAction["payload"]["newType"];
+                        if (!newType) return;
+                        handleAddAction({
+                          type: "CHANGE_TYPE",
+                          description: `Change type of '${name}' to ${newType}`,
+                          payload: { columnName: name, newType },
+                        });
+                        e.currentTarget.selectedIndex = 0;
+                      }}
+                      className="bg-gray-700 text-white px-2 py-1.5 rounded w-full text-sm"
+                    >
+                      <option value="">Select a new type…</option>
+                      <option value="Text">Text</option>
+                      <option value="Integer">Integer</option>
+                      <option value="Float">Float</option>
+                      <option value="Date">Date</option>
+                      <option value="Boolean">Boolean</option>
+                    </select>
+                  </div>
                 </div>
-            </motion.div>
+              ))}
+            </div>
+          </CleaningActionColumn>
+
+          {/* COLUMN 4: Standardize Text */}
+          <CleaningActionColumn
+            title="Standardize Text"
+            icon={Edit3}
+            color="text-green-400"
+            isOpen={openColumns.text}
+            onClick={() => toggleColumn("text")}
+            subtitle="Trim, case, and remove special characters"
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-gray-400">
+                Apply common text cleanups. Choose a column and an operation below.
+              </p>
+
+              <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
+                {columnNames.map((name) => (
+                  <div key={name} className="bg-gray-800/40 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-200 truncate" title={name}>
+                        {name}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
+                        onClick={() =>
+                          handleAddAction({
+                            type: "TRIM_WHITESPACE",
+                            description: `Trim whitespace in '${name}'`,
+                            payload: { columnName: name },
+                          })
+                        }
+                      >
+                        Trim
+                      </button>
+
+                      <button
+                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
+                        onClick={() =>
+                          handleAddAction({
+                            type: "LOWERCASE",
+                            description: `Lowercase '${name}'`,
+                            payload: { columnName: name },
+                          })
+                        }
+                      >
+                        Lowercase
+                      </button>
+
+                      <button
+                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
+                        onClick={() =>
+                          handleAddAction({
+                            type: "UPPERCASE",
+                            description: `Uppercase '${name}'`,
+                            payload: { columnName: name },
+                          })
+                        }
+                      >
+                        Uppercase
+                      </button>
+
+                      <button
+                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
+                        onClick={() =>
+                          handleAddAction({
+                            type: "REMOVE_NON_ALPHANUM",
+                            description: `Remove special characters in '${name}'`,
+                            payload: { columnName: name },
+                          })
+                        }
+                      >
+                        Remove Special Chars
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CleaningActionColumn>
+
+          {/* COLUMN 5: Normalize Numbers */}
+          <CleaningActionColumn
+            title="Normalize Numbers"
+            icon={Sliders}
+            color="text-purple-400"
+            isOpen={openColumns.numbers}
+            onClick={() => toggleColumn("numbers")}
+            subtitle="Round or scale numeric ranges"
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-gray-400">
+                Round to fixed decimals or scale values to a target range.
+              </p>
+
+              {/* ROUNDING */}
+              <div className="space-y-2">
+                <h4 className="text-xs uppercase tracking-wider text-gray-400">Round</h4>
+                <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                  {columnNames.map((name) => (
+                    <div key={name} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-6">
+                        <span className="text-sm text-gray-200 truncate" title={name}>{name}</span>
+                      </div>
+                      <div className="col-span-3">
+                        <input
+                          type="number"
+                          min={0}
+                          max={10}
+                          placeholder="Decimals"
+                          className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              const places = Number((e.target as HTMLInputElement).value) || 0;
+                              handleAddAction({
+                                type: "NUMBER_ROUND",
+                                description: `Round '${name}' to ${places} decimals`,
+                                payload: { columnName: name, roundTo: places },
+                              });
+                              (e.target as HTMLInputElement).value = "";
+                            }
+                          }}
+                          onBlur={(e) => {
+                            const places = Number((e.target as HTMLInputElement).value);
+                            if (Number.isFinite(places)) {
+                              handleAddAction({
+                                type: "NUMBER_ROUND",
+                                description: `Round '${name}' to ${places} decimals`,
+                                payload: { columnName: name, roundTo: places },
+                              });
+                              (e.target as HTMLInputElement).value = "";
+                            }
+                          }}
+                        />
+                      </div>
+                      <div className="col-span-3 text-right">
+                        <button
+                          className="bg-purple-700/50 hover:bg-purple-600/50 text-white py-1.5 px-3 rounded text-xs"
+                          onClick={() =>
+                            handleAddAction({
+                              type: "NUMBER_ROUND",
+                              description: `Round '${name}' to 0 decimals`,
+                              payload: { columnName: name, roundTo: 0 },
+                            })
+                          }
+                        >
+                          Round 0
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* SCALING */}
+              <div className="space-y-2">
+                <h4 className="text-xs uppercase tracking-wider text-gray-400">Scale</h4>
+
+                <div className="space-y-3 max-h-[160px] overflow-y-auto pr-1">
+                  {columnNames.map((name) => (
+                    <div key={name} className="bg-gray-800/40 rounded-xl p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm text-gray-200 truncate" title={name}>{name}</span>
+                        <Hash className="h-4 w-4 text-gray-500" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="number"
+                          placeholder="Out min (default 0)"
+                          className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
+                          id={`scale-min-${name}`}
+                        />
+                        <input
+                          type="number"
+                          placeholder="Out max (default 1)"
+                          className="w-full bg-gray-700 text-white px-2 py-1.5 rounded text-sm"
+                          id={`scale-max-${name}`}
+                        />
+                      </div>
+                      <button
+                        className="mt-2 w-full bg-purple-700/50 hover:bg-purple-600/50 text-white py-1.5 rounded text-sm"
+                        onClick={() => {
+                          const minInput = document.getElementById(`scale-min-${name}`) as HTMLInputElement | null;
+                          const maxInput = document.getElementById(`scale-max-${name}`) as HTMLInputElement | null;
+                          const outMinRaw = minInput ? minInput.value : "0";
+                          const outMaxRaw = maxInput ? maxInput.value : "1";
+                          const outMin = outMinRaw === "" ? 0 : Number(outMinRaw);
+                          const outMax = outMaxRaw === "" ? 1 : Number(outMaxRaw);
+
+                          handleAddAction({
+                            type: "NUMBER_SCALE",
+                            description: `Scale '${name}' to [${outMin}, ${outMax}]`,
+                            payload: {
+                              columnName: name,
+                              scaleMin: Number.isFinite(outMin) ? outMin : 0,
+                              scaleMax: Number.isFinite(outMax) ? outMax : 1,
+                            },
+                          });
+                          if (minInput) minInput.value = "";
+                          if (maxInput) maxInput.value = "";
+                        }}
+                      >
+                        Add Scale Step
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CleaningActionColumn>
+
+          {/* COLUMN 6: Drop Columns */}
+          <CleaningActionColumn
+            title="Drop Columns"
+            icon={Trash2}
+            color="text-pink-400"
+            isOpen={openColumns.dropCols}
+            onClick={() => toggleColumn("dropCols")}
+            subtitle="Remove unnecessary columns"
+          >
+            <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+              {columnNames.map((name) => (
+                <div key={name} className="flex items-center justify-between bg-gray-800/40 p-2 rounded-lg">
+                  <span className="text-sm text-gray-200 truncate" title={name}>{name}</span>
+                  <button
+                    onClick={() => handleAddAction({
+                      type: "DROP_COLUMN",
+                      description: `Drop column '${name}'`,
+                      payload: { columnName: name },
+                    })}
+                    className="bg-pink-600/50 hover:bg-pink-500/50 text-white px-3 py-1 text-xs rounded-md"
+                  >
+                    Drop
+                  </button>
+                </div>
+              ))}
+            </div>
+          </CleaningActionColumn>
         </div>
-        <div className="lg:col-span-1">
-            <PendingActionsQueue actions={actions} setActions={setActions} />
-        </div>
-      </div>
-      
+      </LayoutGroup>
+
       {/* Live Preview Table */}
-      <motion.div layout className="space-y-3">
-        <h3 className="text-xl font-semibold text-white">Live Preview</h3>
-        <div className="overflow-auto max-h-[600px] rounded-lg border border-gray-700">
-            <table className="min-w-full text-sm">
-                <thead className="bg-gray-900 sticky top-0 z-10">
-                    <tr>
-                        {originalDataset.columns.map((c: any) => (
-                            <th key={c.name} className="text-left p-3 text-gray-300 font-medium whitespace-nowrap">{c.name}</th>
-                        ))}
-                    </tr>
-                </thead>
-                <tbody className="bg-gray-800/30">
-                    {previewData.data.slice(0, 100).map((row, rIdx) => (
-                        <tr key={rIdx} className="border-b border-gray-700/50">
-                            {originalDataset.columns.map((c: any) => {
-                                const cell = row[c.name];
-                                return (
-                                    <td 
-                                        key={c.name} 
-                                        className={`p-3 whitespace-nowrap transition-colors duration-300 ${cell?.isChanged ? 'bg-blue-500/20 text-blue-200' : 'text-gray-300'}`}
-                                    >
-                                        {cell ? String(cell.value) : ''}
-                                    </td>
-                                )
-                            })}
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
+      <motion.div
+        layout
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.2 }}
+        className="bg-gray-900/50 rounded-2xl border border-gray-700 p-5"
+      >
+        <h3 className="text-lg font-semibold text-white mb-4">Live Preview (Top 100 Rows)</h3>
+        <div className="overflow-auto max-h-[600px] rounded-lg border border-gray-700 custom-scroll relative shadow-inner">
+          <table className="w-full text-sm text-left text-gray-300">
+            <thead className="text-xs text-gray-400 uppercase bg-gray-800 sticky top-0 z-10 backdrop-blur-sm bg-opacity-80">
+              <tr>
+                {previewColumns.map((name) => (
+                  <th key={name} scope="col" className="px-4 py-3 font-medium whitespace-nowrap">
+                    {name}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {preview.data.slice(0, 100).map((row, rowIndex) => (
+                <tr key={rowIndex} className="border-b border-gray-700 hover:bg-gray-800/40">
+                  {previewColumns.map((name) => {
+                    const cell = row[name];
+                    if (!cell) return <td key={name} className="px-4 py-2"></td>;
+
+                    const displayValue = (v: any) => {
+                      if (v === null || v === undefined) return <span className="text-gray-500 italic">null</span>;
+                      if (v instanceof Date) return v.toLocaleString();
+                      if (typeof v === 'boolean') return v ? 'true' : 'false';
+                      return String(v);
+                    };
+
+                    return (
+                      <td
+                        key={name}
+                        className={`px-4 py-2 whitespace-nowrap transition-colors duration-300 ${cell.isChanged ? "bg-blue-600/20 text-blue-200" : ""
+                          }`}
+                      >
+                        {displayValue(cell.value)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {preview.data.length === 0 && (
+            <div className="text-center p-8 text-gray-500">
+              No data to display. The cleaning recipe may have removed all rows.
+            </div>
+          )}
         </div>
       </motion.div>
-
-      {/* Toast Notification */}
-      <AnimatePresence>
-        {toast.open && (
-          <motion.div
-            initial={{ opacity: 0, y: 50, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className={`fixed bottom-6 right-6 flex items-center space-x-3 px-5 py-3 rounded-lg border text-white ${toast.tone === 'ok' ? 'bg-green-600/80 border-green-500' : 'bg-yellow-600/80 border-yellow-500'}`}
-          >
-            <CheckCircle size={20} />
-            <span className="font-medium">{toast.text}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };
