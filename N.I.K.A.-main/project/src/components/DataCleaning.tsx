@@ -189,7 +189,8 @@ const stableKey = (row: Record<string, any>): string => {
 const objectsToCSV = (rows: Array<Record<string, any>>, columns: string[]): string => {
   const escape = (v: any) => {
     if (v == null) return "";
-    const s = v instanceof Date ? v.toISOString() : String(v);
+    // MODIFIED LINE: Use the same formatting as the preview table.
+    const s = v instanceof Date ? v.toLocaleDateString('en-IN') : String(v);
     const needs = /[",\n]/.test(s);
     return needs ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
