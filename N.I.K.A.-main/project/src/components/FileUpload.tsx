@@ -7,7 +7,6 @@ import {
   generateDataSummary,
   generateAIInsights,
 } from '../utils/dataProcessor';
-import * as XLSX from 'xlsx';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -83,19 +82,30 @@ const FileUpload: React.FC = () => {
     setIsLoading(true);
     setUploadStatus('uploading');
     setErrorMessage('');
+    console.log('🚀 Starting file processing...');
 
     try {
       // 🔹 Upload via backend
+      console.log('1. Awaiting backend upload...');
       const uploadedDataset = await uploadDataset(file);
-      if (!uploadedDataset) throw new Error('Upload failed on server');
+      console.log('2. Backend response received:', uploadedDataset);
+
+      if (!uploadedDataset || !uploadedDataset.data) {
+        // More robust check
+        throw new Error('Invalid or empty dataset from server');
+      }
 
       // 🔹 Normalize dates locally if needed
+      console.log('3. Normalizing dates...');
       const normalizedData = normalizeDates(uploadedDataset.data);
+      console.log('4. Normalization complete.');
 
       // 🔹 Generate summary & insights on frontend
+      console.log('5. Analyzing columns and generating insights...');
       const columns = analyzeColumns(normalizedData);
       const summary = generateDataSummary(normalizedData);
       const insights = generateAIInsights(normalizedData, columns);
+      console.log('6. Analysis complete.');
 
       setDataset(uploadedDataset);
       setRawDataset(uploadedDataset);
@@ -104,12 +114,16 @@ const FileUpload: React.FC = () => {
 
       setDatasetPreview(normalizedData.slice(0, 5));
       setUploadStatus('success');
+      console.log('✅ Process finished successfully!');
     } catch (error) {
-      console.error(error);
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to process file');
+      console.error('❌ An error occurred during file processing:', error);
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to process file'
+      );
       setUploadStatus('error');
     } finally {
       setIsLoading(false);
+      console.log('🔚 Final block executed.');
     }
   };
 
@@ -120,13 +134,16 @@ const FileUpload: React.FC = () => {
     else if (e.type === 'dragleave') setDragActive(false);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0])
-      handleFile(e.dataTransfer.files[0]);
-  }, []);
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragActive(false);
+      if (e.dataTransfer.files && e.dataTransfer.files[0])
+        handleFile(e.dataTransfer.files[0]);
+    },
+    [] // handleFile is not included as a dependency to prevent re-creation on every render cycle
+  );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
@@ -158,13 +175,14 @@ const FileUpload: React.FC = () => {
 
         <motion.div
           className={`relative border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300 backdrop-blur-md bg-black/50
-            ${dragActive
-              ? 'border-blue-400 bg-blue-500/10'
-              : uploadStatus === 'success'
-              ? 'border-green-400 bg-green-500/10'
-              : uploadStatus === 'error'
-              ? 'border-red-400 bg-red-500/10'
-              : 'border-gray-600 bg-gray-800/30 hover:border-gray-500'
+            ${
+              dragActive
+                ? 'border-blue-400 bg-blue-500/10'
+                : uploadStatus === 'success'
+                ? 'border-green-400 bg-green-500/10'
+                : uploadStatus === 'error'
+                ? 'border-red-400 bg-red-500/10'
+                : 'border-gray-600 bg-gray-800/30 hover:border-gray-500'
             }`}
           onDragEnter={handleDrag}
           onDragLeave={handleDrag}
@@ -216,7 +234,7 @@ const FileUpload: React.FC = () => {
                         {datasetPreview.map((row, idx) => (
                           <tr key={idx}>
                             {Object.keys(row).map((col) => (
-                              <td key={col} className="border-b border-gray-800 px-2 py-1">{row[col]}</td>
+                              <td key={col} className="border-b border-gray-800 px-2 py-1">{String(row[col])}</td>
                             ))}
                           </tr>
                         ))}
