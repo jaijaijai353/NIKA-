@@ -27,6 +27,7 @@ const FileUpload: React.FC = () => {
   >('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [datasetPreview, setDatasetPreview] = useState<any[]>([]);
+  const [fileName, setFileName] = useState('');
 
   // Convert Excel serial to Date
   const excelSerialToDate = (serial: number): Date => {
@@ -36,6 +37,7 @@ const FileUpload: React.FC = () => {
   };
 
   const isLikelyExcelSerial = (val: number): boolean => {
+    // A common range for Excel dates (approx 1955 to 2119)
     return Number.isInteger(val) && val >= 20000 && val <= 80000;
   };
 
@@ -54,13 +56,15 @@ const FileUpload: React.FC = () => {
       const out: Record<string, any> = { ...row };
       keys.forEach((k) => {
         const v = out[k];
+        // Handle Excel serial date numbers
         if (typeof v === 'number' && dateHeaderHint[k] && isLikelyExcelSerial(v)) {
           const d = excelSerialToDate(v);
-          out[k] = d.toLocaleDateString('en-GB'); // ✅ dd/mm/yyyy
-        } else if (typeof v === 'string') {
+          out[k] = d.toLocaleDateString('en-GB'); // dd/mm/yyyy
+        // Handle common date strings, avoiding parsing simple numbers as dates
+        } else if (typeof v === 'string' && v.length > 5 && /[/\-\s]/.test(v)) {
           const parsed = new Date(v);
           if (!isNaN(parsed.getTime())) {
-            out[k] = parsed.toLocaleDateString('en-GB'); // ✅ dd/mm/yyyy
+            out[k] = parsed.toLocaleDateString('en-GB'); // dd/mm/yyyy
           }
         }
       });
@@ -78,7 +82,7 @@ const FileUpload: React.FC = () => {
     }
 
     if (!['csv', 'json', 'xlsx', 'xls'].some((ext) => file.name.endsWith(ext))) {
-      setErrorMessage('Unsupported file format.');
+      setErrorMessage('Unsupported file format. Please use CSV, JSON, or Excel.');
       setUploadStatus('error');
       return;
     }
@@ -86,6 +90,7 @@ const FileUpload: React.FC = () => {
     setIsLoading(true);
     setUploadStatus('uploading');
     setErrorMessage('');
+    setFileName(file.name);
 
     try {
       let data: Record<string, any>[] = [];
@@ -107,7 +112,7 @@ const FileUpload: React.FC = () => {
 
       if (!data || data.length === 0) throw new Error('No data found in file');
 
-      // ✅ Keep raw untouched dataset
+      // Keep raw untouched dataset
       const rawDataset = {
         id: `raw-${Date.now()}`,
         name: file.name,
@@ -116,7 +121,7 @@ const FileUpload: React.FC = () => {
         size: file.size,
       };
 
-      // ✅ Make a normalized copy for working dataset
+      // Make a normalized copy for working dataset
       const normalizedData = normalizeDates([...data]);
 
       const columns = analyzeColumns(normalizedData);
@@ -132,15 +137,13 @@ const FileUpload: React.FC = () => {
         size: file.size,
       };
 
-      // Save both versions
       setRawDataset(rawDataset);
       setDataset(dataset);
       setDataSummary(summary);
       setAIInsights(insights);
 
-      // ✅ Preview normalized (cleaned) data
+      // Preview normalized (cleaned) data
       setDatasetPreview(normalizedData.slice(0, 5));
-
       setUploadStatus('success');
     } catch (error) {
       console.error(error);
@@ -172,18 +175,22 @@ const FileUpload: React.FC = () => {
     if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
   };
 
-  return (
-    <div className="relative min-h-screen bg-black flex items-center justify-center p-4 overflow-hidden">
-      {/* Floating Logo */}
-      <motion.div
-        className="absolute text-white opacity-10 select-none pointer-events-none font-bold text-[15rem]"
-        animate={{ rotate: 360 }}
-        transition={{ duration: 120, repeat: Infinity, ease: 'linear' }}
-        style={{ top: '-20%', left: '-10%' }}
-      >
-        NIKA
-      </motion.div>
+  const getBorderColor = () => {
+    if (dragActive) return 'border-sky-400';
+    if (uploadStatus === 'success') return 'border-emerald-400';
+    if (uploadStatus === 'error') return 'border-red-400';
+    return 'border-gray-600 hover:border-gray-400';
+  };
 
+  const getGlowEffect = () => {
+    if (dragActive) return 'shadow-2xl shadow-sky-500/20';
+    if (uploadStatus === 'success') return 'shadow-2xl shadow-emerald-500/20';
+    if (uploadStatus === 'error') return 'shadow-2xl shadow-red-500/20';
+    return '';
+  };
+
+  return (
+    <div className="relative min-h-screen bg-slate-900 flex items-center justify-center p-4 overflow-hidden bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]">
       <motion.div
         className="w-full max-w-3xl relative z-10"
         initial={{ opacity: 0, y: 20 }}
@@ -191,35 +198,27 @@ const FileUpload: React.FC = () => {
         transition={{ duration: 0.6 }}
       >
         <div className="text-center mb-8">
-          <h1 className="text-5xl font-extrabold text-white mb-2 bg-clip-text text-transparent bg-gradient-to-r from-teal-400 to-blue-500">
+          <h1 className="text-5xl font-extrabold text-white mb-3 bg-clip-text text-transparent bg-gradient-to-r from-sky-300 to-violet-400">
             Welcome to NIKA
           </h1>
           <p className="text-gray-400 text-lg">
-            Upload your dataset to begin advanced analytics
+            Upload your dataset to unlock advanced analytics
           </p>
         </div>
 
         {/* Upload Card */}
         <motion.div
-          className={`relative border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300 backdrop-blur-md bg-black/50
-            ${
-              dragActive
-                ? 'border-blue-400 bg-blue-500/10'
-                : uploadStatus === 'success'
-                ? 'border-green-400 bg-green-500/10'
-                : uploadStatus === 'error'
-                ? 'border-red-400 bg-red-500/10'
-                : 'border-gray-600 bg-gray-800/30 hover:border-gray-500'
-            }
-          `}
+          className={`relative border-2 border-dashed rounded-xl p-8 sm:p-12 text-center transition-all duration-300 backdrop-blur-md bg-black/30 ${getBorderColor()} ${getGlowEffect()}`}
           onDragEnter={handleDrag}
           onDragLeave={handleDrag}
           onDragOver={handleDrag}
           onDrop={handleDrop}
           whileHover={{ scale: 1.02 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 20 }}
         >
           <input
             type="file"
+            id="file-upload"
             accept=".csv,.json,.xlsx,.xls"
             onChange={handleChange}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -230,46 +229,49 @@ const FileUpload: React.FC = () => {
             {uploadStatus === 'uploading' && (
               <motion.div
                 key="uploading"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="text-blue-400"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="text-sky-400 flex flex-col items-center"
               >
                 <motion.div
                   animate={{ rotate: 360 }}
-                  transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
-                  className="mx-auto mb-4"
+                  transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+                  className="mb-4"
                 >
                   <Upload className="h-14 w-14" />
                 </motion.div>
-                <p className="text-lg font-medium">Processing your data...</p>
+                <p className="text-lg font-medium text-white">Processing...</p>
+                <p className="text-sm text-gray-400">{fileName}</p>
               </motion.div>
             )}
 
             {uploadStatus === 'success' && (
               <motion.div
                 key="success"
-                initial={{ opacity: 0, scale: 0.8 }}
+                initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0 }}
-                className="text-green-400"
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="text-emerald-400"
               >
                 <CheckCircle className="h-14 w-14 mx-auto mb-4" />
-                <p className="text-lg font-medium">
-                  Dataset uploaded successfully!
+                <p className="text-lg font-medium text-white">
+                  Analysis Complete!
                 </p>
+                <p className="text-sm text-gray-400 mb-4">{fileName}</p>
 
-                {/* ✅ Preview Table */}
                 {datasetPreview.length > 0 && (
-                  <div className="mt-4 text-left bg-gray-900 p-4 rounded-md max-h-64 overflow-auto">
-                    <h3 className="text-white font-semibold mb-2">Preview:</h3>
-                    <table className="w-full text-sm text-gray-300 border-collapse">
+                  <div className="mt-4 text-left bg-black/30 p-4 rounded-lg max-h-60 overflow-auto border border-gray-700">
+                    <h3 className="text-white font-semibold mb-2 text-sm">
+                      Data Preview:
+                    </h3>
+                    <table className="w-full text-xs text-gray-300 border-collapse table-auto">
                       <thead>
-                        <tr>
+                        <tr className="bg-white/5">
                           {Object.keys(datasetPreview[0]).map((col) => (
                             <th
                               key={col}
-                              className="border-b border-gray-700 px-2 py-1"
+                              className="border-b border-gray-700 px-3 py-2 text-left font-medium text-gray-400 uppercase tracking-wider"
                             >
                               {col}
                             </th>
@@ -278,13 +280,13 @@ const FileUpload: React.FC = () => {
                       </thead>
                       <tbody>
                         {datasetPreview.map((row, idx) => (
-                          <tr key={idx}>
+                          <tr key={idx} className={idx % 2 === 0 ? 'bg-white/[0.02]' : ''}>
                             {Object.keys(row).map((col) => (
                               <td
                                 key={col}
-                                className="border-b border-gray-800 px-2 py-1"
+                                className="border-b border-gray-800 px-3 py-2 whitespace-nowrap"
                               >
-                                {row[col]}
+                                {String(row[col])}
                               </td>
                             ))}
                           </tr>
@@ -299,14 +301,14 @@ const FileUpload: React.FC = () => {
             {uploadStatus === 'error' && (
               <motion.div
                 key="error"
-                initial={{ opacity: 0, scale: 0.8 }}
+                initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0 }}
+                exit={{ opacity: 0, scale: 0.9 }}
                 className="text-red-400"
               >
                 <AlertCircle className="h-14 w-14 mx-auto mb-4" />
-                <p className="text-lg font-medium">Upload failed</p>
-                <p className="text-sm text-gray-300 mt-2">{errorMessage}</p>
+                <p className="text-lg font-medium text-white">Upload Failed</p>
+                <p className="text-sm text-gray-300 mt-1">{errorMessage}</p>
               </motion.div>
             )}
 
@@ -318,24 +320,18 @@ const FileUpload: React.FC = () => {
                 exit={{ opacity: 0 }}
                 className="text-gray-400"
               >
-                <FileText className="h-14 w-14 mx-auto mb-4" />
+                <FileText className="h-14 w-14 mx-auto mb-4 text-gray-500" />
                 <p className="text-lg font-medium text-white mb-2">
-                  Drop your dataset here
+                  <span className="font-semibold text-sky-400">
+                    Click to upload
+                  </span>{' '}
+                  or drag and drop
                 </p>
-                <p className="text-sm mb-4">or click to browse files</p>
-                <div className="flex justify-center space-x-4 text-xs">
-                  <span className="bg-gray-700 px-2 py-1 rounded">CSV</span>
-                  <span className="bg-gray-700 px-2 py-1 rounded">JSON</span>
-                  <span className="bg-gray-700 px-2 py-1 rounded">Excel</span>
-                </div>
+                <p className="text-sm">CSV, JSON, or Excel (Max 10MB)</p>
               </motion.div>
             )}
           </AnimatePresence>
         </motion.div>
-
-        <div className="mt-8 text-center text-sm text-gray-400">
-          <p>Supported formats: CSV, JSON, Excel • Max file size: 10MB</p>
-        </div>
       </motion.div>
     </div>
   );
