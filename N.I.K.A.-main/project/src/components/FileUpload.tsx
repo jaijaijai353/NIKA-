@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence, useMotionValue, useSpring } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, CheckCircle, AlertCircle, FileText, RefreshCw } from 'lucide-react';
 import { useDataContext } from '../context/DataContext';
 import {
@@ -16,13 +16,17 @@ const ALLOWED_EXTENSIONS = ['csv', 'json', 'xlsx', 'xls'];
 const PREVIEW_ROW_COUNT = 5;
 
 // --- TYPE DEFINITIONS ---
+
+/** Represents the possible states of the file upload process. */
 type UploadStatus = 'idle' | 'uploading' | 'success' | 'error';
 
+/** Describes the details of the file being uploaded. */
 interface FileDetails {
   name: string;
   size: number;
 }
 
+/** Defines the complete state managed by the useFileUpload hook. */
 interface UseFileUploadState {
   uploadStatus: UploadStatus;
   errorMessage: string;
@@ -47,10 +51,10 @@ const formatFileSize = (bytes: number): string => {
 };
 
 /**
- * Truncates a string if it exceeds a specified length.
+ * Truncates a string if it exceeds a specified length, adding an ellipsis.
  * @param str - The string to truncate.
- * @param num - The maximum length of the string.
- * @returns The truncated string with an ellipsis.
+ * @param num - The maximum length of the string before truncation.
+ * @returns The potentially truncated string.
  */
 const truncateString = (str: string, num: number): string => {
   if (str.length <= num) {
@@ -59,8 +63,23 @@ const truncateString = (str: string, num: number): string => {
   return str.slice(0, num) + '...';
 };
 
+/**
+ * Extracts the file extension from a filename.
+ * @param filename - The full name of the file.
+ * @returns The file's extension in lowercase, or undefined if not found.
+ */
+const getFileExtension = (filename: string): string | undefined => {
+  return filename.split('.').pop()?.toLowerCase();
+};
+
+
 // --- CUSTOM HOOK for File Upload Logic ---
 
+/**
+ * A comprehensive hook to manage the entire file upload and processing lifecycle.
+ * It encapsulates state, validation, parsing, analysis, and state transitions.
+ * @returns An object containing the current upload state and handler functions.
+ */
 const useFileUpload = () => {
   const {
     setDataset,
@@ -80,6 +99,7 @@ const useFileUpload = () => {
 
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Cleanup interval on component unmount
   useEffect(() => {
     return () => {
       if (progressIntervalRef.current) {
@@ -88,6 +108,7 @@ const useFileUpload = () => {
     };
   }, []);
 
+  /** Resets the uploader to its initial 'idle' state. */
   const resetState = useCallback(() => {
     if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     setState({
@@ -100,6 +121,7 @@ const useFileUpload = () => {
     setAppIsLoading(false);
   }, [setAppIsLoading]);
 
+  /** Simulates a progress bar for better user feedback during processing. */
   const startProgressSimulation = () => {
     if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     setState(s => ({ ...s, progress: 0 }));
@@ -115,20 +137,23 @@ const useFileUpload = () => {
     }, 200);
   };
   
+  /** Completes the progress bar animation. */
   const finishProgress = () => {
      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
      setState(s => ({...s, progress: 100}));
   }
 
+  /** The core function to handle file selection, validation, and processing. */
   const handleFile = useCallback(async (file: File | null) => {
     if (!file) return;
 
-    // --- Validation ---
+    // --- File Validation ---
     if (file.size > MAX_FILE_SIZE) {
       setState(s => ({ ...s, uploadStatus: 'error', errorMessage: `File is too large. Max size is ${formatFileSize(MAX_FILE_SIZE)}.` }));
       return;
     }
-    if (!ALLOWED_EXTENSIONS.some(ext => file.name.endsWith(ext))) {
+    const fileExtension = getFileExtension(file.name);
+    if (!fileExtension || !ALLOWED_EXTENSIONS.includes(fileExtension)) {
       setState(s => ({ ...s, uploadStatus: 'error', errorMessage: 'Unsupported file format.' }));
       return;
     }
@@ -142,10 +167,9 @@ const useFileUpload = () => {
     }));
     startProgressSimulation();
 
-    // --- Processing ---
+    // --- File Processing ---
     try {
       let data: Record<string, any>[] = [];
-      const fileExtension = file.name.split('.').pop()?.toLowerCase();
 
       switch (fileExtension) {
         case 'csv':
@@ -170,7 +194,7 @@ const useFileUpload = () => {
 
       if (!data || data.length === 0) throw new Error('No data found in file.');
 
-      // --- Data Normalization ---
+      // --- Data Normalization Logic (nested for encapsulation) ---
       const excelSerialToDate = (serial: number): Date => new Date(Date.UTC(1899, 11, 30) + serial * 24 * 60 * 60 * 1000);
       const isLikelyExcelSerial = (val: number): boolean => Number.isInteger(val) && val >= 20000 && val <= 80000;
       const normalizeDates = (rows: Record<string, any>[]): Record<string, any>[] => {
@@ -194,7 +218,7 @@ const useFileUpload = () => {
       
       const normalizedData = normalizeDates([...data]);
 
-      // --- Analysis & Context Update ---
+      // --- Data Analysis & Context Update ---
       const columns = analyzeColumns(normalizedData);
       const summary = generateDataSummary(normalizedData);
       const insights = generateAIInsights(normalizedData, columns);
@@ -235,38 +259,9 @@ const useFileUpload = () => {
 
 // --- UI SUB-COMPONENTS ---
 
-const BackgroundEffects: React.FC = () => {
-    const mouseX = useMotionValue(0);
-    const mouseY = useMotionValue(0);
-    const springConfig = { damping: 100, stiffness: 500 };
-    const smoothMouseX = useSpring(mouseX, springConfig);
-    const smoothMouseY = useSpring(mouseY, springConfig);
-    
-    const handleMouseMove = (e: React.MouseEvent) => {
-      const { clientX, clientY, currentTarget } = e;
-      const { left, top } = currentTarget.getBoundingClientRect();
-      mouseX.set(clientX - left);
-      mouseY.set(clientY - top);
-    };
-
-    return (
-        <div className="absolute inset-0 w-full h-full -z-10 overflow-hidden" onMouseMove={handleMouseMove}>
-            {/* Animated Grid */}
-            <div className="absolute inset-0 w-full h-full bg-[linear-gradient(to_right,#1f2937_1px,transparent_1px),linear-gradient(to_bottom,#1f2937_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)]"></div>
-            {/* Mouse Spotlight */}
-            <motion.div
-                className="absolute inset-0 w-full h-full pointer-events-none [mask-image:radial-gradient(300px_300px_at_var(--x)_var(--y),white,transparent)]"
-                style={{
-                    '--x': smoothMouseX,
-                    '--y': smoothMouseY,
-                } as any}
-            >
-               <div className="absolute inset-0 w-full h-full bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]"></div>
-            </motion.div>
-        </div>
-    );
-};
-
+/**
+ * Renders the main animated header for the page.
+ */
 const WelcomeHeader: React.FC = () => {
   const title = "Welcome to NIKA";
   const subtitle = "Upload your dataset to unlock advanced analytics";
@@ -287,7 +282,7 @@ const WelcomeHeader: React.FC = () => {
   return (
     <div className="text-center mb-10">
       <motion.h1
-        className="text-5xl md:text-6xl font-extrabold text-white mb-4 bg-clip-text text-transparent bg-gradient-to-r from-sky-300 to-violet-400"
+        className="text-5xl md:text-6xl font-extrabold text-white mb-4 bg-clip-text text-transparent bg-gradient-to-r from-gray-400 to-gray-200"
         variants={containerVariants}
         initial="hidden"
         animate="visible"
@@ -310,6 +305,11 @@ const WelcomeHeader: React.FC = () => {
   );
 };
 
+/**
+ * Displays a preview of the uploaded data in a formatted table.
+ * @param {object} props - The component props.
+ * @param {any[]} props.data - The array of data rows to display.
+ */
 const DataPreview: React.FC<{ data: any[] }> = ({ data }) => {
     if (!data.length) return null;
     const headers = Object.keys(data[0]);
@@ -319,14 +319,14 @@ const DataPreview: React.FC<{ data: any[] }> = ({ data }) => {
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             transition={{ duration: 0.5, delay: 0.2 }}
-            className="mt-6 text-left bg-black/30 p-4 rounded-lg max-h-60 overflow-auto border border-gray-700"
+            className="mt-6 w-full text-left bg-zinc-950/70 p-4 rounded-lg max-h-60 overflow-auto border border-gray-700"
         >
             <h3 className="text-white font-semibold mb-3 text-sm">Data Preview:</h3>
             <table className="w-full text-xs text-gray-300 border-collapse table-auto">
                 <thead>
                     <tr className="bg-white/5">
                         {headers.map(col => (
-                            <th key={col} className="sticky top-0 bg-slate-800/50 backdrop-blur-sm border-b border-gray-700 px-3 py-2 text-left font-medium text-gray-400 uppercase tracking-wider">
+                            <th key={col} className="sticky top-0 bg-zinc-900/80 backdrop-blur-sm border-b border-gray-700 px-3 py-2 text-left font-medium text-gray-400 uppercase tracking-wider">
                                 {truncateString(col, 20)}
                             </th>
                         ))}
@@ -348,11 +348,15 @@ const DataPreview: React.FC<{ data: any[] }> = ({ data }) => {
     );
 };
 
+/**
+ * Renders the specific UI for each upload state (idle, uploading, success, error).
+ * @param {UseFileUploadState & { onReset: () => void }} props - The current state and reset handler.
+ */
 const FileStateUI: React.FC<UseFileUploadState & { onReset: () => void }> = ({ uploadStatus, errorMessage, datasetPreview, fileDetails, progress, onReset }) => {
     const statusMap = {
         idle: { icon: FileText, color: 'text-gray-500', title: 'Click to upload', subtitle: 'or drag and drop' },
-        uploading: { icon: Upload, color: 'text-sky-400', title: 'Processing...', subtitle: fileDetails ? truncateString(fileDetails.name, 30) : '' },
-        success: { icon: CheckCircle, color: 'text-emerald-400', title: 'Analysis Complete!', subtitle: `${formatFileSize(fileDetails?.size ?? 0)} uploaded.` },
+        uploading: { icon: Upload, color: 'text-blue-400', title: 'Processing...', subtitle: fileDetails ? truncateString(fileDetails.name, 30) : '' },
+        success: { icon: CheckCircle, color: 'text-green-400', title: 'Analysis Complete!', subtitle: `${formatFileSize(fileDetails?.size ?? 0)} uploaded.` },
         error: { icon: AlertCircle, color: 'text-red-400', title: 'Upload Failed', subtitle: errorMessage },
     };
 
@@ -376,7 +380,7 @@ const FileStateUI: React.FC<UseFileUploadState & { onReset: () => void }> = ({ u
                 {uploadStatus === 'uploading' && (
                     <div className="w-full bg-gray-700 rounded-full h-1.5 mt-4">
                         <motion.div
-                            className="bg-sky-400 h-1.5 rounded-full"
+                            className="bg-blue-400 h-1.5 rounded-full"
                             initial={{ width: 0 }}
                             animate={{ width: `${progress}%` }}
                             transition={{ duration: 0.5, ease: 'linear' }}
@@ -388,7 +392,7 @@ const FileStateUI: React.FC<UseFileUploadState & { onReset: () => void }> = ({ u
                 {(uploadStatus === 'success' || uploadStatus === 'error') && (
                     <motion.button
                         onClick={onReset}
-                        className="mt-6 flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-slate-700/50 rounded-md hover:bg-slate-600/50 border border-slate-600 transition-all"
+                        className="mt-6 flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gray-800/50 rounded-md hover:bg-gray-700/50 border border-gray-700 transition-all"
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
                     >
@@ -401,7 +405,13 @@ const FileStateUI: React.FC<UseFileUploadState & { onReset: () => void }> = ({ u
     );
 };
 
-
+/**
+ * The main drag-and-drop card component.
+ * @param {object} props - Component props.
+ * @param {(file: File | null) => void} props.onFileSelect - Callback for when a file is selected.
+ * @param {UseFileUploadState} props.uploadState - The current state from the useFileUpload hook.
+ * @param {() => void} props.onReset - Callback to reset the uploader.
+ */
 const FileUploadCard: React.FC<{
   onFileSelect: (file: File | null) => void;
   uploadState: UseFileUploadState;
@@ -428,27 +438,27 @@ const FileUploadCard: React.FC<{
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             onFileSelect(e.target.files[0]);
-            e.target.value = ''; // Reset file input
+            e.target.value = ''; // Reset file input to allow re-uploading the same file
         }
     };
     
     const borderColor = useMemo(() => {
-        if (dragActive) return 'border-sky-400';
-        if (uploadState.uploadStatus === 'success') return 'border-emerald-400';
+        if (dragActive) return 'border-blue-400';
+        if (uploadState.uploadStatus === 'success') return 'border-green-400';
         if (uploadState.uploadStatus === 'error') return 'border-red-400';
         return 'border-gray-600';
     }, [dragActive, uploadState.uploadStatus]);
     
     const glowEffect = useMemo(() => {
-        if (dragActive) return 'shadow-[0_0_20px_theme(colors.sky.500/0.5)]';
-        if (uploadState.uploadStatus === 'success') return 'shadow-[0_0_20px_theme(colors.emerald.500/0.5)]';
+        if (dragActive) return 'shadow-[0_0_20px_theme(colors.blue.500/0.5)]';
+        if (uploadState.uploadStatus === 'success') return 'shadow-[0_0_20px_theme(colors.green.500/0.5)]';
         if (uploadState.uploadStatus === 'error') return 'shadow-[0_0_20px_theme(colors.red.500/0.5)]';
         return 'shadow-none';
     }, [dragActive, uploadState.uploadStatus]);
 
     return (
         <motion.div
-            className={`relative border-2 border-dashed rounded-xl p-8 sm:p-12 text-center transition-all duration-300 backdrop-blur-md bg-black/40 min-h-[350px] flex items-center justify-center
+            className={`relative border-2 border-dashed rounded-xl p-8 sm:p-12 text-center transition-all duration-300 backdrop-blur-md bg-zinc-900/60 min-h-[350px] flex items-center justify-center
             ${borderColor} ${glowEffect}`}
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
@@ -460,6 +470,7 @@ const FileUploadCard: React.FC<{
             <input
                 type="file"
                 id="file-upload"
+                aria-label="File uploader"
                 accept={ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(',')}
                 onChange={handleChange}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -471,14 +482,16 @@ const FileUploadCard: React.FC<{
 };
 
 
-// --- MAIN COMPONENT ---
+// --- MAIN PAGE COMPONENT ---
 
+/**
+ * The primary FileUpload page component that assembles all sub-components and logic.
+ */
 const FileUpload: React.FC = () => {
     const uploadState = useFileUpload();
 
     return (
-        <div className="relative min-h-screen bg-slate-900 flex items-center justify-center p-4 overflow-hidden">
-            <BackgroundEffects />
+        <div className="relative min-h-screen bg-black flex items-center justify-center p-4 overflow-hidden">
             <motion.div
                 className="w-full max-w-3xl relative z-10"
                 initial="hidden"
@@ -489,7 +502,11 @@ const FileUpload: React.FC = () => {
                 }}
             >
                 <WelcomeHeader />
-                <FileUploadCard onFileSelect={uploadState.handleFile} uploadState={uploadState} onReset={uploadState.resetState} />
+                <FileUploadCard 
+                  onFileSelect={uploadState.handleFile} 
+                  uploadState={uploadState} 
+                  onReset={uploadState.resetState} 
+                />
             </motion.div>
         </div>
     );
