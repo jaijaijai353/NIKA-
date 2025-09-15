@@ -26,4 +26,5 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, onTabChange }) => {
     { id: 'insights', label: 'AI Insights', icon: Brain },
     // Q&A tab removed
   ];
+}
 @@ .. @@
