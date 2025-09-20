@@ -1,5 +1,97 @@
+
 import { Dataset, ColumnInfo, DataSummary, AIInsight } from '../types';
 import Papa from 'papaparse';
+
+// ===========================
+// Math & Type Guards
+// ===========================
+
+export const isMissing = (v: any): boolean =>
+  v === null ||
+  v === undefined ||
+  v === '' ||
+  (typeof v === 'number' && Number.isNaN(v));
+
+export const isFiniteNumber = (v: any): boolean => typeof v === 'number' && Number.isFinite(v);
+
+export const toNumber = (v: any): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+export const mean = (arr: number[]): number => {
+  if (!arr || arr.length === 0) return 0;
+  const s = arr.reduce((a, b) => a + b, 0);
+  return s / arr.length;
+};
+
+export const median = (arr: number[]): number => {
+  if (!arr || arr.length === 0) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const n = s.length;
+  const mid = Math.floor(n / 2);
+  return n % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
+
+export const stdDev = (arr: number[]): number => {
+  if (!arr || arr.length < 2) return 0;
+  const m = mean(arr);
+  const v = arr.reduce((acc, x) => acc + (x - m) ** 2, 0) / (arr.length - 1);
+  return Math.sqrt(v);
+};
+
+export const minMax = (arr: number[]): { min: number; max: number } => {
+  if (!arr || arr.length === 0) return { min: 0, max: 0 };
+  let mn = arr[0],
+    mx = arr[0];
+  for (let i = 1; i < arr.length; i++) {
+    const v = arr[i];
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  return { min: mn, max: mx };
+};
+
+export const pearson = (x: number[], y: number[]): number => {
+    if (!x || !y) return 0;
+    const n = Math.min(x.length, y.length);
+    if (n < 2) return 0;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < n; i++) {
+        if (isFiniteNumber(x[i]) && isFiniteNumber(y[i])) {
+            xs.push(x[i]);
+            ys.push(y[i]);
+        }
+    }
+    if (xs.length < 2) return 0;
+    const mx = mean(xs);
+    const my = mean(ys);
+    let num = 0,
+        sx = 0,
+        sy = 0;
+    for (let i = 0; i < xs.length; i++) {
+        num += (xs[i] - mx) * (ys[i] - my);
+        sx += (xs[i] - mx) ** 2;
+        sy += (ys[i] - my) ** 2;
+    }
+    const den = Math.sqrt(sx * sy);
+    if (!isFiniteNumber(num) || !isFiniteNumber(den) || den === 0) return 0;
+    return num / den;
+};
+
+export const zScoreOutliers = (arr: number[], thresh = 2.5): number[] => {
+    if (!arr || arr.length < 2) return [];
+    const m = mean(arr);
+    const s = stdDev(arr);
+    if (s === 0) return [];
+    const idx: number[] = [];
+    for (let i = 0; i < arr.length; i++) {
+        const z = (arr[i] - m) / s;
+        if (Math.abs(z) > thresh) idx.push(i);
+    }
+    return idx;
+};
 
 // ✅ Parse CSV file
 export const parseCSV = (file: File): Promise<Record<string, any>[]> => {
@@ -20,26 +112,25 @@ export const parseCSV = (file: File): Promise<Record<string, any>[]> => {
   });
 };
 
-// ✅ Analyze columns
+// ✅ Analyze columns (Refactored)
 export const analyzeColumns = (data: Record<string, any>[]): ColumnInfo[] => {
   if (data.length === 0) return [];
   
   const columns = Object.keys(data[0]);
   
   return columns.map(columnName => {
-    const values = data.map(row => row[columnName]).filter(val => val !== null && val !== undefined && val !== '');
-    const nonMissingCount = values.length;
-    const missingCount = data.length - nonMissingCount;
+    const values = data.map(row => row[columnName]).filter(val => !isMissing(val));
+    const missingCount = data.length - values.length;
     const uniqueValues = new Set(values);
     
     // Detect column type
-    const numericValues = values.filter(val => typeof val === 'number' && !isNaN(val));
-    const isNumeric = numericValues.length > values.length * 0.8;
+    const numericValues = values.map(toNumber).filter(isFiniteNumber);
+    const isNumericCandidate = numericValues.length / values.length > 0.8;
     
     let type: ColumnInfo['type'] = 'text';
-    if (isNumeric) {
+    if (isNumericCandidate) {
       type = 'numeric';
-    } else if (uniqueValues.size < values.length * 0.1) {
+    } else if (uniqueValues.size <= 50 || uniqueValues.size / values.length < 0.2) {
       type = 'categorical';
     } else if (values.some(val => !isNaN(Date.parse(val)))) {
       type = 'date';
@@ -53,13 +144,12 @@ export const analyzeColumns = (data: Record<string, any>[]): ColumnInfo[] => {
     };
     
     if (type === 'numeric' && numericValues.length > 0) {
-      columnInfo.min = Math.min(...numericValues);
-      columnInfo.max = Math.max(...numericValues);
-      columnInfo.mean = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
-      columnInfo.median = numericValues.sort((a, b) => a - b)[Math.floor(numericValues.length / 2)];
-      columnInfo.std = Math.sqrt(
-        numericValues.reduce((acc, val) => acc + Math.pow(val - columnInfo.mean!, 2), 0) / numericValues.length
-      );
+      const { min: minVal, max: maxVal } = minMax(numericValues);
+      columnInfo.min = minVal;
+      columnInfo.max = maxVal;
+      columnInfo.mean = mean(numericValues);
+      columnInfo.median = median(numericValues);
+      columnInfo.std = stdDev(numericValues);
     }
     
     return columnInfo;
@@ -84,7 +174,7 @@ export const generateDataSummary = (data: Record<string, any>[]): DataSummary =>
     }
     
     Object.values(row).forEach(value => {
-      if (value === null || value === undefined || value === '') {
+      if (isMissing(value)) {
         missingValues++;
       }
     });
