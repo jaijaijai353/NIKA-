@@ -1,6 +1,5 @@
 // backend/server.ts
 import express from 'express';
-import cors from 'cors';
 import multer from 'multer';
 import sqlite3 from 'sqlite3';
 import path from 'path';
@@ -12,23 +11,25 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-app.use(cors({
-  origin: CLIENT_ORIGIN,
-  credentials: true
-}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Define project root
+const projectRoot = path.join(__dirname, '..', '..');
+
+// Serve frontend files
+const frontendDistPath = path.join(projectRoot, 'dist');
+app.use(express.static(frontendDistPath));
+
 // Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
+const uploadsDir = path.join(projectRoot, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
   console.log('📁 Created uploads directory');
 }
 
 // Database setup
-const dbPath = path.join(__dirname, 'db.sqlite');
+const dbPath = path.join(projectRoot, 'db.sqlite');
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('❌ Error opening database:', err);
@@ -61,10 +62,10 @@ db.serialize(() => {
 
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
-  destination: (req: express.Request, file: Express.Multer.File, cb: (err: Error | null, dest?: string) => void) => {
+  destination: (req, file, cb) => {
     cb(null, uploadsDir);
   },
-  filename: (req: express.Request, file: Express.Multer.File, cb: (err: Error | null, filename?: string) => void) => {
+  filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
     cb(null, `${uniqueSuffix}-${sanitizedName}`);
@@ -76,7 +77,7 @@ const upload = multer({
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB limit
   },
-  fileFilter: (req: express.Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  fileFilter: (req, file, cb) => {
     const allowedTypes = ['.csv', '.xlsx', '.xls', '.json'];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowedTypes.includes(ext)) {
@@ -357,6 +358,12 @@ app.get('/preview/:id', async (req: express.Request, res: express.Response): Pro
   );
 });
 
+// Catch-all route to serve index.html
+app.get('*', (req, res) => {
+  res.sendFile(path.join(frontendDistPath, 'index.html'));
+});
+
+
 // Error handling middleware
 app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction): void => {
   console.error('❌ Server error:', error);
@@ -373,17 +380,13 @@ app.use((error: any, req: express.Request, res: express.Response, next: express.
   });
 });
 
-// 404 handler
-app.use((req: express.Request, res: express.Response): void => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
+
 
 // Start server
 const server = app.listen(PORT, () => {
   console.log(`🚀 NIKA Backend server running on http://localhost:${PORT}`);
   console.log(`📁 Upload directory: ${uploadsDir}`);
   console.log(`🗄️  Database: ${dbPath}`);
-  console.log(`🌐 CORS enabled for: ${CLIENT_ORIGIN}`);
 });
 
 // Graceful shutdown

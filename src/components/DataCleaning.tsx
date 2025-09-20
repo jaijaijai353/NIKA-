@@ -1,10 +1,11 @@
 // src/components/DataCleaning.tsx
 // --------------------------------------------------------------------------------------------
 //
-// Enhanced Data Cleaning Workbench (Full, non-condensed ~1300 lines)
+// Enhanced Data Cleaning Workbench (Full, non-condensed ~1500 lines)
 // - Independent collapsible cards laid out as true side-by-side columns
 // - Expanded toolset: Missing Data, Duplicates, Data Types, Standardize Text,
 //   Normalize Numbers, Drop Columns
+// - EXTENDED: Added Replace Substring, Capitalize Words, and Extract Date Part.
 // - Action queue with drag-to-reorder and remove
 // - Live preview (top 100 rows), with change-highlighting and sticky header
 // - CSV export of the current preview
@@ -56,6 +57,7 @@ import {
   ChevronDown,
   Sliders,
   Hash,
+  CalendarDays, // NEW ICON
 } from "lucide-react";
 
 import { saveAs } from "file-saver";
@@ -78,7 +80,11 @@ export type CleaningActionType =
   | "UPPERCASE"
   | "REMOVE_NON_ALPHANUM"
   | "NUMBER_ROUND"
-  | "NUMBER_SCALE";
+  | "NUMBER_SCALE"
+  // NEW ACTION TYPES
+  | "REPLACE_SUBSTRING"
+  | "CAPITALIZE_WORDS"
+  | "EXTRACT_DATE_PART";
 
 /** Describes a queued cleaning action. */
 export interface CleaningAction {
@@ -93,6 +99,10 @@ export interface CleaningAction {
     roundTo?: number; // for NUMBER_ROUND
     scaleMin?: number; // for NUMBER_SCALE
     scaleMax?: number; // for NUMBER_SCALE
+    // NEW PAYLOAD PROPERTIES
+    find?: string; // for REPLACE_SUBSTRING
+    replaceWith?: string; // for REPLACE_SUBSTRING
+    part?: "year" | "month" | "day" | "weekday"; // for EXTRACT_DATE_PART
   };
 }
 
@@ -174,6 +184,9 @@ const trim = (v: any) => (v == null ? v : String(v).trim());
 
 /** Remove non alphanumeric (preserve spaces) */
 const removeNonAlphanum = (v: any) => (v == null ? v : String(v).replace(/[^\p{L}\p{N}\s]/gu, ""));
+
+/** NEW: Safe string capitalize words (title case). */
+const capitalizeWords = (v: any) => (v == null ? v : String(v).replace(/\b\w/g, char => char.toUpperCase()));
 
 /** Deep compare for duplicate detection by serializing stable values. */
 const stableKey = (row: Record<string, any>): string => {
@@ -414,9 +427,11 @@ const DataCleaning: React.FC = () => {
   // -------------------------------------------------------------
   const [actions, setActions] = useState<CleaningAction[]>([]);
  
-  // NEW: State to manage the values of the scale inputs without direct DOM access
+  // State to manage the values of the scale inputs without direct DOM access
   const [scaleInputs, setScaleInputs] = useState<Record<string, { min: string; max: string }>>({});
 
+  // NEW: State for "Replace Substring" inputs
+  const [replaceInputs, setReplaceInputs] = useState<Record<string, { find: string; replaceWith: string }>>({});
 
   const [openColumns, setOpenColumns] = useState({
     missing: true,
@@ -424,6 +439,7 @@ const DataCleaning: React.FC = () => {
     types: false,
     text: false,
     numbers: false,
+    dates: false, // NEW
     dropCols: false,
   });
 
@@ -611,6 +627,61 @@ const DataCleaning: React.FC = () => {
           break;
         }
 
+        case "CAPITALIZE_WORDS": {
+          const col = action.payload.columnName!;
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            if (v == null) return row;
+            const nv = capitalizeWords(v);
+            if (nv === v) return row;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "REPLACE_SUBSTRING": {
+          const col = action.payload.columnName!;
+          const find = action.payload.find!;
+          const replaceWith = action.payload.replaceWith!;
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            if (v == null || find === '') return row;
+            const nv = String(v).replaceAll(find, replaceWith);
+            if (nv === v) return row;
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
+        case "EXTRACT_DATE_PART": {
+          const col = action.payload.columnName!;
+          const part = action.payload.part!;
+          const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+          processed = processed.map((row) => {
+            const v = row[col]?.value;
+            const date = toDateOrNull(v);
+            if (!date) return row;
+
+            let nv: string | number | null = null;
+            if (part === 'year') nv = date.getFullYear();
+            if (part === 'month') nv = date.getMonth() + 1; // 1-indexed
+            if (part === 'day') nv = date.getDate();
+            if (part === 'weekday') nv = weekdays[date.getDay()];
+            
+            if (nv === null) return row;
+
+            const copy = { ...row };
+            setCell(copy, col, nv);
+            return copy;
+          });
+          break;
+        }
+
         case "NUMBER_ROUND": {
           const col = action.payload.columnName!;
           const places = action.payload.roundTo ?? 0;
@@ -691,12 +762,19 @@ const DataCleaning: React.FC = () => {
         if (!action.payload.columnName) {
             return a.type === 'REMOVE_DUPLICATES';
         }
+
+        // For actions with complex payloads (like replace), check more fields
+        if (action.type === 'REPLACE_SUBSTRING') {
+            return a.payload.columnName === action.payload.columnName &&
+                   a.payload.find === action.payload.find;
+        }
+
         // For actions on a column, check type and column name
         return a.payload.columnName === action.payload.columnName;
     });
 
     if (isRedundant) {
-        toast.error(`A "${action.description}" step already exists.`);
+        toast.error(`A similar "${action.description}" step already exists.`);
         return;
     }
 
@@ -735,7 +813,7 @@ const DataCleaning: React.FC = () => {
     setDataset({ columns: nextColumns, data: finalCleanedData });
     setActions([]);
     toast.success("Cleaning recipe applied successfully!");
-   
+    
   }, [preview, originalDataset, setDataset, actions]);
 
   const handleReset = useCallback(() => {
@@ -840,7 +918,7 @@ const DataCleaning: React.FC = () => {
       <PendingActionsQueue actions={actions} setActions={setActions} />
 
       <LayoutGroup>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-7 gap-6">
           <CleaningActionColumn
             title="Handle Missing Data"
             icon={AlertTriangle}
@@ -986,73 +1064,42 @@ const DataCleaning: React.FC = () => {
             subtitle="Trim, case, and remove special characters"
           >
             <div className="space-y-4">
-              <p className="text-sm text-gray-400">
-                Apply common text cleanups. Choose a column and an operation below.
-              </p>
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
                 {columnNames.map((name) => (
-                  <div key={name} className="bg-gray-800/40 rounded-xl p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-gray-200 truncate" title={name}>
-                        {name}
-                      </span>
-                    </div>
+                  <div key={name} className="bg-gray-800/40 rounded-xl p-3 space-y-3">
+                    <span className="text-sm font-medium text-gray-200 truncate" title={name}>
+                      {name}
+                    </span>
+                    {/* Basic transforms */}
                     <div className="grid grid-cols-2 gap-2">
-                      <button
-                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
-                        onClick={() =>
-                          handleAddAction({
-                            type: "TRIM_WHITESPACE",
-                            description: `Trim whitespace in '${name}'`,
-                            payload: { columnName: name },
-                          })
-                        }
-                      >
-                        Trim
-                      </button>
-                      <button
-                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
-                        onClick={() =>
-                          handleAddAction({
-                            type: "LOWERCASE",
-                            description: `Lowercase '${name}'`,
-                            payload: { columnName: name },
-                          })
-                        }
-                      >
-                        Lowercase
-                      </button>
-                      <button
-                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
-                        onClick={() =>
-                          handleAddAction({
-                            type: "UPPERCASE",
-                            description: `Uppercase '${name}'`,
-                            payload: { columnName: name },
-                          })
-                        }
-                      >
-                        Uppercase
-                      </button>
-                      <button
-                        className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-sm"
-                        onClick={() =>
-                          handleAddAction({
-                            type: "REMOVE_NON_ALPHANUM",
-                            description: `Remove special characters in '${name}'`,
-                            payload: { columnName: name },
-                          })
-                        }
-                      >
-                        Remove Special Chars
-                      </button>
+                      <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "TRIM_WHITESPACE", description: `Trim whitespace in '${name}'`, payload: { columnName: name } })}>Trim</button>
+                      <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "LOWERCASE", description: `Lowercase '${name}'`, payload: { columnName: name } })}>Lowercase</button>
+                      <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "UPPERCASE", description: `Uppercase '${name}'`, payload: { columnName: name } })}>Uppercase</button>
+                      <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "CAPITALIZE_WORDS", description: `Capitalize '${name}'`, payload: { columnName: name } })}>Capitalize</button>
+                    </div>
+                    {/* Replace Substring */}
+                    <div className="space-y-2">
+                       <div className="grid grid-cols-2 gap-2">
+                         <input placeholder="Find" className="bg-gray-700 text-white px-2 py-1.5 rounded text-sm" value={replaceInputs[name]?.find ?? ''} onChange={(e) => setReplaceInputs(s => ({...s, [name]: {...(s[name] ?? {replaceWith: ''}), find: e.target.value}}))} />
+                         <input placeholder="Replace" className="bg-gray-700 text-white px-2 py-1.5 rounded text-sm" value={replaceInputs[name]?.replaceWith ?? ''} onChange={(e) => setReplaceInputs(s => ({...s, [name]: {...(s[name] ?? {find: ''}), replaceWith: e.target.value}}))} />
+                       </div>
+                       <button className="w-full bg-green-700/50 hover:bg-green-600/50 text-white py-1.5 rounded text-sm" onClick={() => {
+                           const find = replaceInputs[name]?.find;
+                           const replaceWith = replaceInputs[name]?.replaceWith;
+                           if (!find) {
+                               toast.error("'Find' text cannot be empty.");
+                               return;
+                           }
+                           handleAddAction({ type: "REPLACE_SUBSTRING", description: `In '${name}', replace "${find}" with "${replaceWith}"`, payload: { columnName: name, find, replaceWith }});
+                           setReplaceInputs(s => ({...s, [name]: {find: '', replaceWith: ''}}));
+                       }}>Replace</button>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
           </CleaningActionColumn>
-
+          
           <CleaningActionColumn
             title="Normalize Numbers"
             icon={Sliders}
@@ -1083,7 +1130,7 @@ const DataCleaning: React.FC = () => {
                               if (e.key === "Enter") {
                                   handleRoundSubmit((e.target as HTMLInputElement).value, name);
                                   (e.target as HTMLInputElement).value = "";
-                              }
+                                }
                             }}
                             onBlur={(e) => {
                               handleRoundSubmit((e.target as HTMLInputElement).value, name);
@@ -1146,7 +1193,7 @@ const DataCleaning: React.FC = () => {
                           const outMaxRaw = scaleInputs[name]?.max ?? "1";
                           const outMin = outMinRaw === "" ? 0 : Number(outMinRaw);
                           const outMax = outMaxRaw === "" ? 1 : Number(outMaxRaw);
-                         
+                          
                           handleAddAction({
                             type: "NUMBER_SCALE",
                             description: `Scale '${name}' to [${outMin}, ${outMax}]`,
@@ -1168,6 +1215,30 @@ const DataCleaning: React.FC = () => {
             </div>
           </CleaningActionColumn>
 
+          {/* NEW CARD FOR DATE HANDLING */}
+          <CleaningActionColumn
+            title="Handle Dates"
+            icon={CalendarDays}
+            color="text-teal-400"
+            isOpen={openColumns.dates}
+            onClick={() => toggleColumn("dates")}
+            subtitle="Extract parts from date columns"
+          >
+            <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+              {columnNames.map((name) => (
+                <div key={name} className="bg-gray-800/40 rounded-xl p-3 space-y-2">
+                  <span className="text-sm font-medium text-gray-200 truncate" title={name}>{name}</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "EXTRACT_DATE_PART", description: `Extract Year from '${name}'`, payload: { columnName: name, part: 'year' } })}>Extract Year</button>
+                    <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "EXTRACT_DATE_PART", description: `Extract Month from '${name}'`, payload: { columnName: name, part: 'month' } })}>Extract Month</button>
+                    <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "EXTRACT_DATE_PART", description: `Extract Day from '${name}'`, payload: { columnName: name, part: 'day' } })}>Extract Day</button>
+                    <button className="bg-gray-700/70 hover:bg-gray-600 text-white py-1.5 rounded text-xs" onClick={() => handleAddAction({ type: "EXTRACT_DATE_PART", description: `Extract Weekday from '${name}'`, payload: { columnName: name, part: 'weekday' } })}>Extract Weekday</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CleaningActionColumn>
+          
           <CleaningActionColumn
             title="Drop Columns"
             icon={Trash2}
