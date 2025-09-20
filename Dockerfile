@@ -1,28 +1,25 @@
-# Use a Node.js base image
-FROM node:18-alpine
-
-# Set the working directory
+# Stage 1: Build the frontend
+FROM node:18-alpine AS frontend
 WORKDIR /app
-
-# Install frontend dependencies
-COPY package*.json ./
+COPY package.json package-lock.json ./
 RUN npm install
-
-# Install backend dependencies
-COPY backend/package*.json ./backend/
-RUN npm install --prefix backend
-
-# Copy the rest of the project files
 COPY . .
-
-# Build the frontend
 RUN npm run build
 
-# Build the backend
-RUN npm run build --prefix backend
+# Stage 2: Build the backend
+FROM node:18-alpine AS backend
+WORKDIR /app
+COPY backend/package.json backend/package-lock.json ./
+RUN npm install
+COPY backend .
+RUN npm run build
 
-# Expose the port the app will run on
+# Stage 3: Create the production image
+FROM node:18-alpine
+WORKDIR /app
+COPY --from=frontend /app/dist ./dist
+COPY --from=backend /app/dist ./backend/dist
+COPY --from=backend /app/node_modules ./backend/node_modules
+COPY backend/package.json ./backend/
 EXPOSE 5000
-
-# Start the server
 CMD ["node", "backend/dist/server.js"]
